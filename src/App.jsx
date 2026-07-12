@@ -147,8 +147,62 @@ const GlobalStyle = () => (
       font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
     }
 
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+    .mobile-menu-btn { display: none; background: none; border: none; padding: 4px; }
+    .mobile-menu-panel {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 6px 24px 20px; border-top: 1px solid var(--line); background: var(--paper);
+    }
+    .mobile-menu-panel a { padding: 12px 4px; font-size: 15px; font-weight: 500; border-bottom: 1px solid var(--paper-line); }
+
+    .app-topbar-mobile { display: none; }
+    .app-sidebar-scrim { display: none; }
+
     @media (max-width: 760px) {
       .hide-mobile { display: none !important; }
+      .mobile-menu-btn { display: flex !important; }
+
+      .hero-grid { grid-template-columns: 1fr !important; padding: 44px 20px 52px !important; gap: 32px !important; }
+      .hero-stamp-circle { width: 208px !important; height: 208px !important; }
+
+      .app-topbar-mobile {
+        display: flex !important; align-items: center; justify-content: space-between;
+        padding: 14px 18px; background: white; border-bottom: 1px solid var(--line);
+        position: sticky; top: 0; z-index: 30;
+      }
+      .app-sidebar {
+        position: fixed !important; top: 0; left: 0; height: 100vh; width: 250px !important;
+        z-index: 70; transform: translateX(-100%); transition: transform 0.22s ease;
+        box-shadow: 10px 0 34px rgba(0,0,0,0.28);
+      }
+      .app-sidebar.open { transform: translateX(0); }
+      .app-sidebar-scrim {
+        display: block !important; position: fixed; inset: 0;
+        background: rgba(9,14,18,0.5); z-index: 65;
+      }
+      .app-main { padding: 18px 16px 64px !important; }
+
+      .form-grid { grid-template-columns: 1fr !important; }
+      .form-grid-padrao { grid-template-columns: 1fr !important; }
+      .form-section { padding: 16px !important; }
+
+      .action-row, .cert-toolbar { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }
+      .action-row button, .cert-toolbar button { width: 100%; justify-content: center; }
+
+      table.data-table { font-size: 12px; }
+      table.data-table th, table.data-table td { padding: 7px 9px; white-space: nowrap; }
+
+      .cert-doc { padding: 26px 16px 0 32px !important; }
+      .cert-diagonal { width: 22px !important; clip-path: polygon(0 0, 100% 0, 30% 100%, 0 100%); }
+      .cert-footer-bar { margin: 0 -16px 0 -32px !important; padding: 8px 12px !important; font-size: 9px !important; }
+      .cert-title { font-size: 22px !important; }
+
+      .cert-signature-row { flex-direction: column !important; align-items: center !important; gap: 18px; text-align: center !important; }
+      .cert-signature-row > div:first-child, .cert-signature-row > div:last-child { text-align: center !important; }
+
+      /* prevents iOS Safari from auto-zooming the page on input focus */
+      input, select { font-size: 16px !important; }
     }
 
     /* ---- certificate document (matches the CTJ-pattern layout) ---- */
@@ -312,10 +366,22 @@ function Nav({ onEnterApp }) {
           <button className="btn-ghost" onClick={onEnterApp}>Entrar</button>
           <button className="btn-primary" onClick={onEnterApp}>Ver demonstração <ArrowRight size={16} /></button>
         </div>
-        <button className="hide-mobile-none" style={{ background: "none", border: "none", display: window.innerWidth < 761 ? "block" : "none" }} onClick={() => setOpen(!open)}>
-          <Menu size={22} />
+        <button className="mobile-menu-btn" onClick={() => setOpen((o) => !o)} aria-label="Abrir menu">
+          {open ? <X size={22} /> : <Menu size={22} />}
         </button>
       </div>
+      {open && (
+        <div className="mobile-menu-panel">
+          <a href="#recursos" onClick={() => setOpen(false)}>Recursos</a>
+          <a href="#rastreabilidade" onClick={() => setOpen(false)}>Rastreabilidade</a>
+          <a href="#precos" onClick={() => setOpen(false)}>Planos</a>
+          <a href="#stack" onClick={() => setOpen(false)}>Tecnologia</a>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+            <button className="btn-ghost" style={{ justifyContent: "center" }} onClick={onEnterApp}>Entrar</button>
+            <button className="btn-primary" style={{ justifyContent: "center" }} onClick={onEnterApp}>Ver demonstração <ArrowRight size={16} /></button>
+          </div>
+        </div>
+      )}
     </header>
   );
 }
@@ -328,7 +394,7 @@ function Hero({ onEnterApp }) {
   }, []);
   return (
     <section className="grid-paper" style={{ borderBottom: "1px solid var(--line)" }}>
-      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "72px 24px 88px", display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: 56, alignItems: "center" }}>
+      <div className="hero-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "72px 24px 88px", display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: 56, alignItems: "center" }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 600, color: "var(--steel)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 18 }}>
             <ShieldCheck size={15} /> Conformidade ISO/IEC 17025 &middot; Inmetro
@@ -346,7 +412,7 @@ function Hero({ onEnterApp }) {
         </div>
 
         <div style={{ display: "flex", justifyContent: "center" }}>
-          <div style={{ position: "relative", width: 260, height: 260, borderRadius: "50%", background: "var(--navy)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 24px 60px -20px rgba(16,26,34,0.5)" }}>
+          <div className="hero-stamp-circle" style={{ position: "relative", width: 260, height: 260, borderRadius: "50%", background: "var(--navy)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 24px 60px -20px rgba(16,26,34,0.5)" }}>
             <div className="stamp-ring" style={{ position: "absolute", inset: 14 }} />
             <div style={{ textAlign: "center", color: "white" }}>
               <div style={{ fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.55)", marginBottom: 8 }}>Certificado nº</div>
@@ -570,7 +636,7 @@ function LandingPage({ onEnterApp }) {
 /* App shell (demo)                                                     */
 /* ------------------------------------------------------------------ */
 
-function Sidebar({ page, setPage, onExit }) {
+function Sidebar({ page, setPage, onExit, open }) {
   const items = [
     { id: "dashboard", label: "Painel", icon: BarChart3 },
     { id: "certificados", label: "Certificados", icon: FileText },
@@ -580,7 +646,7 @@ function Sidebar({ page, setPage, onExit }) {
     { id: "config", label: "Configurações", icon: Settings },
   ];
   return (
-    <aside style={{ width: 226, flexShrink: 0, background: "var(--navy)", color: "white", display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+    <aside className={`app-sidebar${open ? " open" : ""}`} style={{ width: 226, flexShrink: 0, background: "var(--navy)", color: "white", display: "flex", flexDirection: "column", minHeight: "100vh" }}>
       <div style={{ padding: "22px 20px", borderBottom: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", gap: 9 }}>
         <svg width="22" height="22" viewBox="0 0 26 26">
           <circle cx="13" cy="13" r="11.5" fill="none" stroke="white" strokeWidth="1.6" />
@@ -657,6 +723,7 @@ function Dashboard({ certificados, setPage }) {
           <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Certificados recentes</h3>
           <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={() => setPage("certificados")}>Ver todos</button>
         </div>
+        <div className="table-scroll">
         <table className="data-table">
           <thead><tr><th>Nº</th><th>Cliente</th><th>Instrumento</th><th>Data</th><th>Status</th></tr></thead>
           <tbody>
@@ -671,6 +738,7 @@ function Dashboard({ certificados, setPage }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -695,6 +763,7 @@ function CertificateList({ certificados, setPage, setActiveId }) {
         <input style={{ paddingLeft: 32 }} placeholder="Buscar por cliente, número, instrumento..." value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+        <div className="table-scroll">
         <table className="data-table">
           <thead><tr><th>Nº certificado</th><th>Cliente</th><th>Instrumento</th><th>Data calibração</th><th>Status</th><th></th></tr></thead>
           <tbody>
@@ -713,6 +782,7 @@ function CertificateList({ certificados, setPage, setActiveId }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -736,7 +806,7 @@ function emptyForm() {
 
 function Section({ title, children }) {
   return (
-    <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 6, padding: 22, marginBottom: 18 }}>
+    <div className="form-section" style={{ background: "white", border: "1px solid var(--line)", borderRadius: 6, padding: 22, marginBottom: 18 }}>
       <h3 style={{ fontSize: 14.5, fontWeight: 600, margin: "0 0 16px", textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--graphite)" }}>{title}</h3>
       {children}
     </div>
@@ -761,6 +831,7 @@ function ResultTable({ label, icon: Icon, rows, onChange }) {
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10, fontWeight: 600, fontSize: 13.5 }}>
         <Icon size={15} color="var(--steel)" /> {label}
       </div>
+      <div className="table-scroll">
       <table className="data-table">
         <thead><tr><th>Referência</th><th>Medido</th><th>Erro</th><th>k</th><th>Incerteza</th><th></th></tr></thead>
         <tbody>
@@ -776,6 +847,7 @@ function ResultTable({ label, icon: Icon, rows, onChange }) {
           ))}
         </tbody>
       </table>
+      </div>
       <button className="btn-ghost" style={{ marginTop: 10, padding: "7px 14px", fontSize: 13 }} onClick={addRow}><PlusCircle size={14} /> Adicionar leitura</button>
     </div>
   );
@@ -812,7 +884,7 @@ function NewCertificate({ certificados, onSave, setPage }) {
       <p style={{ color: "var(--graphite)", fontSize: 14, marginBottom: 22 }}>Próximo número: <span className="mono">{nextNumero(certificados)}</span></p>
 
       <Section title="Cliente">
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
+        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
           <div><label className="field-label">Razão social</label><input value={form.cliente.razaoSocial} onChange={(e) => setCliente("razaoSocial", e.target.value)} placeholder="Ex: Metalúrgica Nordeste Ltda" /></div>
           <div><label className="field-label">Código do cliente</label><input value={form.cliente.codigo} onChange={(e) => setCliente("codigo", e.target.value)} placeholder="CL-0000" /></div>
         </div>
@@ -821,7 +893,7 @@ function NewCertificate({ certificados, onSave, setPage }) {
       </Section>
 
       <Section title="Instrumento">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
           <div><label className="field-label">Instrumento</label><input value={form.instrumento.nome} onChange={(e) => setInstrumento("nome", e.target.value)} placeholder="Termohigrômetro" /></div>
           <div><label className="field-label">Código de identificação</label><input value={form.instrumento.codigoId} onChange={(e) => setInstrumento("codigoId", e.target.value)} placeholder="THG-12" /></div>
           <div><label className="field-label">Fabricante</label><input value={form.instrumento.fabricante} onChange={(e) => setInstrumento("fabricante", e.target.value)} /></div>
@@ -835,7 +907,7 @@ function NewCertificate({ certificados, onSave, setPage }) {
 
       <Section title="Padrões utilizados">
         {form.padroes.map((p, i) => (
-          <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 10, marginBottom: 10, alignItems: "end" }}>
+          <div key={i} className="form-grid-padrao" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 10, marginBottom: 10, alignItems: "end" }}>
             <div><label className="field-label">Descrição</label><input value={p.descricao} onChange={(e) => setPadrao(i, "descricao", e.target.value)} placeholder="Termohigrômetro Testo 650" /></div>
             <div><label className="field-label">Código</label><input value={p.codigo} onChange={(e) => setPadrao(i, "codigo", e.target.value)} /></div>
             <div><label className="field-label">Certificado</label><input value={p.certificado} onChange={(e) => setPadrao(i, "certificado", e.target.value)} /></div>
@@ -852,13 +924,13 @@ function NewCertificate({ certificados, onSave, setPage }) {
       </Section>
 
       <Section title="Emissão">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           <div><label className="field-label">Data da calibração</label><input type="date" value={form.dataCalibracao} onChange={(e) => setForm((f) => ({ ...f, dataCalibracao: e.target.value }))} /></div>
           <div><label className="field-label">Responsável técnico</label><input value={form.responsavel} onChange={(e) => setForm((f) => ({ ...f, responsavel: e.target.value }))} placeholder="Eng. Nome Sobrenome" /></div>
         </div>
       </Section>
 
-      <div style={{ display: "flex", gap: 12 }}>
+      <div className="action-row" style={{ display: "flex", gap: 12 }}>
         <button className="btn-primary" disabled={!canSave} style={!canSave ? { opacity: 0.4, cursor: "not-allowed" } : {}} onClick={handleSave}>
           <Check size={16} /> Gerar certificado
         </button>
@@ -895,7 +967,7 @@ function CertificateView({ cert, setPage }) {
 
   return (
     <div>
-      <div className="hide-mobile no-print" style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
+      <div className="cert-toolbar no-print" style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
         <button onClick={() => setPage("certificados")} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 500 }}>
           <ArrowLeft size={17} /> Voltar
         </button>
@@ -980,12 +1052,14 @@ function CertificateView({ cert, setPage }) {
         {cert.padroes?.length > 0 && (
           <>
             <div className="cert-section-title"><span>Padrão Utilizado</span><span className="en">Measurement Standard</span></div>
+            <div className="table-scroll">
             <table className="data-table">
               <thead><tr><th>Descrição / Description</th><th>Código / Code</th><th>Nº Certificado / Certificate</th><th>Validade / Valid Until</th></tr></thead>
               <tbody>{cert.padroes.map((p, i) => (
                 <tr key={i}><td>{p.descricao || "—"}</td><td className="mono">{p.codigo || "—"}</td><td className="mono">{p.certificado || "—"}</td><td className="mono">{p.validade || "—"}</td></tr>
               ))}</tbody>
             </table>
+            </div>
           </>
         )}
 
@@ -999,7 +1073,7 @@ function CertificateView({ cert, setPage }) {
         <div className="cert-section-title" style={{ marginBottom: 6 }}><span>Procedimento de Calibração</span><span className="en">Measurement Procedure</span></div>
         <p className="cert-note" style={{ marginBottom: 26 }}>Os resultados obtidos são médias de leituras sucessivas. O instrumento em referência foi calibrado por comparação direta a instrumentos de características padrão, conforme procedimento(s) interno(s) do laboratório.</p>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", paddingBottom: 20 }}>
+        <div className="cert-signature-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", paddingBottom: 20 }}>
           <div style={{ fontSize: 11, color: "var(--graphite)" }}>
             <div>Data da Emissão <i>/ Issued on</i></div>
             <div className="mono" style={{ fontWeight: 600, color: "var(--ink)" }}>{fmtDate(cert.dataCalibracao)}</div>
@@ -1056,6 +1130,7 @@ function CertificateView({ cert, setPage }) {
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
                 {g === "temperatura" ? <Thermometer size={13} /> : <Droplets size={13} />} {g === "temperatura" ? "Temperatura" : "Umidade"}
               </div>
+              <div className="table-scroll">
               <table className="data-table">
                 <thead><tr><th>Valor de Referência</th><th>Valor Medido</th><th>Erro de Medição</th><th>k</th><th>Incerteza de Medição</th></tr></thead>
                 <tbody>{cert.resultados[g].map((r, i) => (
@@ -1066,6 +1141,7 @@ function CertificateView({ cert, setPage }) {
                   </tr>
                 ))}</tbody>
               </table>
+              </div>
             </div>
           )
         )}
@@ -1094,6 +1170,7 @@ function AppShell({ onExit }) {
   const [certificados, setCertificados] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     loadCertificados().then((list) => { setCertificados(list); setLoaded(true); });
@@ -1110,29 +1187,40 @@ function AppShell({ onExit }) {
   }, []);
 
   const activeCert = certificados.find((c) => c.id === activeId);
+  const goPage = (p) => { setPage(p); setSidebarOpen(false); };
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
-      <Sidebar page={page} setPage={setPage} onExit={onExit} />
-      <main style={{ flex: 1, padding: "32px 36px", background: "var(--paper)" }}>
-        {!loaded ? (
-          <div style={{ color: "var(--graphite)", fontSize: 14 }}>Carregando...</div>
-        ) : page === "dashboard" ? (
-          <Dashboard certificados={certificados} setPage={setPage} />
-        ) : page === "certificados" ? (
-          <CertificateList certificados={certificados} setPage={setPage} setActiveId={setActiveId} />
-        ) : page === "novo" ? (
-          <NewCertificate certificados={certificados} onSave={handleSave} setPage={setPage} />
-        ) : page === "ver" ? (
-          <CertificateView cert={activeCert} setPage={setPage} />
-        ) : page === "clientes" ? (
-          <Placeholder title="Clientes" />
-        ) : page === "usuarios" ? (
-          <Placeholder title="Usuários e permissões" />
-        ) : (
-          <Placeholder title="Configurações" />
-        )}
-      </main>
+      {sidebarOpen && <div className="app-sidebar-scrim" onClick={() => setSidebarOpen(false)} />}
+      <Sidebar page={page} setPage={goPage} onExit={onExit} open={sidebarOpen} />
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div className="app-topbar-mobile">
+          <button onClick={() => setSidebarOpen(true)} style={{ background: "none", border: "none" }} aria-label="Abrir menu">
+            <Menu size={22} color="var(--ink)" />
+          </button>
+          <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>Traço</span>
+          <div style={{ width: 22 }} />
+        </div>
+        <main className="app-main" style={{ flex: 1, padding: "32px 36px", background: "var(--paper)" }}>
+          {!loaded ? (
+            <div style={{ color: "var(--graphite)", fontSize: 14 }}>Carregando...</div>
+          ) : page === "dashboard" ? (
+            <Dashboard certificados={certificados} setPage={setPage} />
+          ) : page === "certificados" ? (
+            <CertificateList certificados={certificados} setPage={setPage} setActiveId={setActiveId} />
+          ) : page === "novo" ? (
+            <NewCertificate certificados={certificados} onSave={handleSave} setPage={setPage} />
+          ) : page === "ver" ? (
+            <CertificateView cert={activeCert} setPage={setPage} />
+          ) : page === "clientes" ? (
+            <Placeholder title="Clientes" />
+          ) : page === "usuarios" ? (
+            <Placeholder title="Usuários e permissões" />
+          ) : (
+            <Placeholder title="Configurações" />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
