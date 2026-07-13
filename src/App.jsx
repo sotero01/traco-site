@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  ShieldCheck, FileText, Gauge, Boxes, Users, Settings, PlusCircle, Search,
+  ShieldCheck, FileText, Gauge, Boxes, Users, Settings as SettingsIcon, PlusCircle, Search,
   Printer, ArrowRight, Layers, Database, Server, Cloud, Lock, ChevronRight,
   X, Trash2, Building2, Thermometer, Droplets, Menu, Check, ClipboardList,
-  BarChart3, Clock, ArrowLeft
+  BarChart3, Clock, ArrowLeft, Beaker, Image as ImageIcon, PenTool, Upload
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -195,7 +195,7 @@ const GlobalStyle = () => (
 
       .cert-doc { padding: 26px 16px 0 32px !important; }
       .cert-diagonal { width: 22px !important; clip-path: polygon(0 0, 100% 0, 30% 100%, 0 100%); }
-      .cert-footer-bar { margin: 0 -16px 0 -32px !important; padding: 8px 12px !important; font-size: 9px !important; }
+      .cert-footer-bar { padding: 8px 10px !important; font-size: 8.5px !important; }
       .cert-title { font-size: 22px !important; }
 
       .cert-signature-row { flex-direction: column !important; align-items: center !important; gap: 18px; text-align: center !important; }
@@ -205,17 +205,27 @@ const GlobalStyle = () => (
       input, select { font-size: 16px !important; }
     }
 
-    /* ---- certificate document (matches the CTJ-pattern layout) ---- */
+    /* ---- certificate document (matches the CTJ/Elus reference pattern) ---- */
     .cert-doc {
       position: relative;
       background: white;
       overflow: hidden;
       border: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
     }
     .cert-diagonal {
       position: absolute; top: 0; left: 0; width: 46px; height: 100%;
       background: var(--orange);
       clip-path: polygon(0 0, 100% 0, 34% 100%, 0 100%);
+      z-index: 1;
+    }
+    .cert-watermark {
+      position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+      user-select: none; z-index: 0;
+    }
+    .cert-content {
+      position: relative; z-index: 1; flex: 1;
     }
     .cert-title {
       font-family: 'Playfair Display', serif;
@@ -235,9 +245,10 @@ const GlobalStyle = () => (
     .cert-doc table.data-table td, .cert-doc table.data-table th { padding: 6px 8px; }
     .cert-note { font-size: 10.5px; line-height: 1.6; color: var(--graphite); margin: 3px 0; }
     .cert-footer-bar {
-      background: var(--navy); color: rgba(255,255,255,0.75);
-      font-size: 10px; padding: 9px 24px; text-align: center;
-      display: flex; justify-content: center; gap: 6px; flex-wrap: wrap;
+      position: relative; z-index: 1;
+      background: white; color: var(--graphite);
+      font-size: 9.5px; padding: 10px 20px; text-align: center; line-height: 1.6;
+      border-top: 1px solid var(--paper-line); margin-top: 24px;
     }
     @media print {
       .no-print { display: none !important; }
@@ -287,10 +298,176 @@ async function saveCertificados(list) {
   }
 }
 
+const CONFIG_KEY = "traco:config";
+
+function defaultConfig() {
+  return {
+    empresaNome: "",
+    logoDataUrl: null,
+    endereco: "",
+    telefone: "",
+    email: "",
+    acreditacaoNumero: "",
+    acreditacaoData: "",
+    responsavelNome: "",
+    responsavelCargo: "Responsável Técnico",
+    assinaturaDataUrl: null,
+  };
+}
+async function loadConfig() {
+  try {
+    const res = await storageAdapter.get(CONFIG_KEY);
+    return res ? { ...defaultConfig(), ...JSON.parse(res.value) } : defaultConfig();
+  } catch {
+    return defaultConfig();
+  }
+}
+async function saveConfig(cfg) {
+  try {
+    await storageAdapter.set(CONFIG_KEY, JSON.stringify(cfg));
+  } catch (e) {
+    console.error("Falha ao salvar configuração", e);
+  }
+}
+
+function fileToDataUrl(file, cb) {
+  const reader = new FileReader();
+  reader.onload = () => cb(reader.result);
+  reader.readAsDataURL(file);
+}
+
+/* ==================================================================== */
+/* Motor de incerteza (GUM) — portado das fórmulas da planilha PP-014     */
+/* (Tipo A/B, combinação por quadratura, Welch-Satterthwaite, Student-t)  */
+/* ==================================================================== */
+
+// Student-t bicaudal a 95,45% de confiança (p = 0,0455) — Anexo G, Tabela G.2
+// do Guia para Expressão da Incerteza de Medição (GUM). Mesma tabela que a
+// planilha original consulta via TINV(0,0455; veff).
+const T_TABLE_9545 = [
+  [1, 13.97], [2, 4.527], [3, 3.307], [4, 2.869], [5, 2.649], [6, 2.517],
+  [7, 2.429], [8, 2.366], [9, 2.320], [10, 2.284], [11, 2.256], [12, 2.233],
+  [13, 2.214], [14, 2.198], [15, 2.184], [16, 2.173], [17, 2.162], [18, 2.154],
+  [19, 2.145], [20, 2.139], [25, 2.113], [30, 2.097], [35, 2.086], [40, 2.078],
+  [45, 2.072], [50, 2.067], [60, 2.059], [80, 2.048], [100, 2.042],
+];
+
+function studentT9545(v) {
+  if (!isFinite(v) || v <= 0) return 2.0;
+  if (v >= 100) return 2.0;
+  for (let i = 0; i < T_TABLE_9545.length - 1; i++) {
+    const [v1, t1] = T_TABLE_9545[i];
+    const [v2, t2] = T_TABLE_9545[i + 1];
+    if (v >= v1 && v <= v2) {
+      const frac = (v - v1) / (v2 - v1);
+      return t1 + frac * (t2 - t1);
+    }
+  }
+  return 2.0;
+}
+
+function parseNum(v) {
+  if (v === "" || v === null || v === undefined) return NaN;
+  return parseFloat(String(v).replace(",", "."));
+}
+function meanOf(arr) {
+  const nums = (arr || []).map(parseNum).filter((n) => !isNaN(n));
+  if (!nums.length) return NaN;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+function countValid(arr) {
+  return (arr || []).map(parseNum).filter((n) => !isNaN(n)).length;
+}
+function stdevOf(arr) {
+  const nums = (arr || []).map(parseNum).filter((n) => !isNaN(n));
+  if (nums.length < 2) return 0;
+  const m = meanOf(nums);
+  const variance = nums.reduce((a, b) => a + (b - m) ** 2, 0) / (nums.length - 1);
+  return Math.sqrt(variance);
+}
+// Tipo B, distribuição retangular: entra a amplitude total (ex.: resolução),
+// internamente meia-amplitude / √3 — mesma convenção da planilha (C = a/2; divisor √3).
+function typeBRect(fullRange) {
+  const n = parseNum(fullRange);
+  if (isNaN(n) || n === 0) return 0;
+  return (n / 2) / Math.sqrt(3);
+}
+// Tipo B, distribuição normal (ex.: incerteza expandida do certificado do padrão): U/k.
+function typeBNormal(U, k) {
+  const u = parseNum(U);
+  const kk = parseNum(k) || 2;
+  if (isNaN(u)) return 0;
+  return u / kk;
+}
+
+function emptyPontoIncerteza() {
+  return {
+    leiturasPadrao: ["", "", "", "", ""],
+    leiturasInstrumento: ["", "", "", "", ""],
+    correcaoPadrao: "0",
+    incertezaPadrao: "",
+    kPadrao: "2",
+    derivaPadrao: "",
+    outrasContribuicoes: "",
+  };
+}
+
+// Núcleo do cálculo — reproduz a estrutura da aba "Incerteza" da planilha PP-014
+// para um ponto de calibração: incerteza do SMC (instrumento sob calibração),
+// incerteza do SMP (padrão de referência), combinação, graus de liberdade
+// efetivos (Welch-Satterthwaite) e incerteza expandida (k de Student a 95,45%).
+function computeIncertezaPonto(ponto, resolucaoInstrumento, resolucaoPadrao) {
+  const leiturasP = ponto.leiturasPadrao || [];
+  const leiturasI = ponto.leiturasInstrumento || [];
+
+  const mediaPadrao = meanOf(leiturasP);
+  const mediaInstrumento = meanOf(leiturasI);
+  const nPadrao = countValid(leiturasP);
+  const nInstr = countValid(leiturasI);
+  const stdevPadrao = stdevOf(leiturasP);
+  const stdevInstr = stdevOf(leiturasI);
+
+  // Incerteza do SMC (instrumento sob calibração)
+  const u_Tm = nInstr > 1 ? stdevInstr / Math.sqrt(nInstr) : 0;
+  const v_Tm = nInstr > 1 ? nInstr - 1 : 0;
+  const u_resInstr = typeBRect(resolucaoInstrumento);
+  const u_outras = typeBRect(ponto.outrasContribuicoes);
+  const uc_smc = Math.sqrt(u_Tm ** 2 + u_resInstr ** 2 + u_outras ** 2);
+
+  // Incerteza do SMP (padrão de referência)
+  const u_Tmpad = nPadrao > 1 ? stdevPadrao / Math.sqrt(nPadrao) : 0;
+  const v_Tmpad = nPadrao > 1 ? nPadrao - 1 : 0;
+  const u_cert = typeBNormal(ponto.incertezaPadrao, ponto.kPadrao);
+  const u_resPad = typeBRect(resolucaoPadrao);
+  const u_deriva = typeBRect(ponto.derivaPadrao);
+  const uc_smp = Math.sqrt(u_Tmpad ** 2 + u_cert ** 2 + u_resPad ** 2 + u_deriva ** 2);
+
+  // Combinação por quadratura
+  const uc = Math.sqrt(uc_smc ** 2 + uc_smp ** 2);
+
+  // Graus de liberdade efetivos (Welch-Satterthwaite) — só as contribuições
+  // Tipo A entram no denominador; Tipo B (v = ∞) contribuem 0.
+  const denom = (v_Tm > 0 ? u_Tm ** 4 / v_Tm : 0) + (v_Tmpad > 0 ? u_Tmpad ** 4 / v_Tmpad : 0);
+  const veff = (denom === 0 || uc === 0) ? Infinity : (uc ** 4) / denom;
+
+  const k = studentT9545(veff);
+  const uexp = uc * k;
+
+  const correcaoPadrao = parseNum(ponto.correcaoPadrao) || 0;
+  const valorConvencionado = (isNaN(mediaPadrao) ? 0 : mediaPadrao) + correcaoPadrao;
+  const erro = (isNaN(mediaInstrumento) ? 0 : mediaInstrumento) - valorConvencionado;
+
+  return {
+    mediaPadrao, mediaInstrumento, nPadrao, nInstr,
+    valorConvencionado, erro, uc_smc, uc_smp, uc, veff, k, uexp,
+  };
+}
+
 function seedData() {
   return [
     {
       id: "cert-seed-1",
+      tipo: "calibracao",
       numero: "TRC-0001/26",
       os: "OS-0044/26",
       dataCalibracao: "2026-06-18",
@@ -314,16 +491,51 @@ function seedData() {
         { descricao: "Termohigrômetro Testo 650", codigo: "TRC-H-004", certificado: "RBC-9002214", validade: "2026-11" },
       ],
       resultados: {
-        temperatura: [
-          { referencia: 14.9, medido: 15.1, k: 2.0, incerteza: 0.3 },
-          { referencia: 20.0, medido: 20.1, k: 2.0, incerteza: 0.3 },
-          { referencia: 30.0, medido: 30.3, k: 2.0, incerteza: 0.3 },
-        ],
-        umidade: [
-          { referencia: 43.9, medido: 45.0, k: 2.0, incerteza: 1.6 },
-          { referencia: 63.2, medido: 65.0, k: 2.0, incerteza: 2.2 },
-        ],
+        temperatura: {
+          resolucaoInstrumento: "0,1",
+          resolucaoPadrao: "0,01",
+          pontos: [
+            { leiturasPadrao: ["14,85", "14,88", "14,87", "14,86", "14,89"], leiturasInstrumento: ["15,1", "15,1", "15,2", "15,1", "15,0"], correcaoPadrao: "0,02", incertezaPadrao: "0,05", kPadrao: "2", derivaPadrao: "0,02", outrasContribuicoes: "0,1" },
+            { leiturasPadrao: ["19,98", "20,01", "19,99", "20,00", "20,02"], leiturasInstrumento: ["20,1", "20,1", "20,1", "20,2", "20,1"], correcaoPadrao: "0,01", incertezaPadrao: "0,05", kPadrao: "2", derivaPadrao: "0,02", outrasContribuicoes: "0,1" },
+            { leiturasPadrao: ["29,95", "29,97", "29,96", "29,98", "29,94"], leiturasInstrumento: ["30,3", "30,2", "30,3", "30,4", "30,3"], correcaoPadrao: "0,03", incertezaPadrao: "0,05", kPadrao: "2", derivaPadrao: "0,02", outrasContribuicoes: "0,1" },
+          ],
+        },
+        umidade: {
+          resolucaoInstrumento: "1",
+          resolucaoPadrao: "0,5",
+          pontos: [
+            { leiturasPadrao: ["43,8", "43,9", "44,0", "43,9", "43,8"], leiturasInstrumento: ["45", "45", "46", "45", "45"], correcaoPadrao: "0", incertezaPadrao: "1,5", kPadrao: "2", derivaPadrao: "0,3", outrasContribuicoes: "0,5" },
+            { leiturasPadrao: ["63,0", "63,2", "63,3", "63,1", "63,2"], leiturasInstrumento: ["65", "65", "66", "65", "65"], correcaoPadrao: "0", incertezaPadrao: "1,5", kPadrao: "2", derivaPadrao: "0,3", outrasContribuicoes: "0,5" },
+          ],
+        },
       },
+    },
+    {
+      id: "cert-seed-2",
+      tipo: "mrc",
+      numero: "MR-001/26",
+      status: "emitido",
+      mrcNome: "Solução Padrão de Condutividade 1,413 mS/cm",
+      codigo: "TRCOND1413",
+      lote: "0626-TRCOND1413-0091",
+      descricao: "O Material de Referência Certificado consiste em uma solução eletrolítica preparada a partir de sal de cloreto de potássio e água purificada.",
+      preparacao: "O material foi preparado gravimetricamente e envasado em frasco de polietileno de alta densidade.",
+      metodologia: "O valor certificado foi obtido por caracterização com condutivímetro calibrado, conforme estudos de homogeneidade e estabilidade baseados na ABNT ISO 17034.",
+      rastreabilidade: "A rastreabilidade foi assegurada por medição com célula de condutividade calibrada por padrão rastreado ao Sistema Internacional de Unidades (SI).",
+      finalidade: "Uso para calibração e verificação de medidores de condutividade eletrolítica.",
+      armazenamento: "Armazenar em ambiente protegido da luz, entre 15 e 30 °C. Após o uso, fechar bem o frasco e manter refrigerado.",
+      valorCertificado: { grandeza: "Condutividade eletrolítica", valor: "1,413", unidade: "mS/cm", incerteza: "0,01", temperaturaRef: "25,0", incertezaTemp: "0,1" },
+      dataCertificacao: "2026-06-10",
+      validadeLote: "2027-06",
+      responsavel: "Eng. Marina Alcântara",
+      cargo: "Signatária Autorizada",
+      informacoesAdicionais: [
+        "A integridade deste material é assegurada até a abertura da embalagem, se esta estiver íntegra.",
+        "Este MRC deve ser manuseado conforme as instruções deste certificado e a ficha de segurança correspondente.",
+        "Este certificado perde a validade caso o material seja danificado, contaminado ou alterado.",
+        "Este certificado é válido apenas para o lote produzido, não sendo extensivo a outros lotes.",
+        "A reprodução deste certificado só pode ser feita de forma integral, sem alterações.",
+      ],
     },
   ];
 }
@@ -331,10 +543,21 @@ function seedData() {
 function nextNumero(list) {
   const year = new Date().getFullYear().toString().slice(-2);
   const nums = list
+    .filter((c) => c.tipo !== "mrc")
     .map((c) => parseInt((c.numero || "").split("-")[1]?.split("/")[0], 10))
     .filter((n) => !isNaN(n));
   const next = (nums.length ? Math.max(...nums) : 0) + 1;
   return `TRC-${String(next).padStart(4, "0")}/${year}`;
+}
+
+function nextNumeroMRC(list) {
+  const year = new Date().getFullYear().toString().slice(-2);
+  const nums = list
+    .filter((c) => c.tipo === "mrc")
+    .map((c) => parseInt((c.numero || "").split("-")[1]?.split("/")[0], 10))
+    .filter((n) => !isNaN(n));
+  const next = (nums.length ? Math.max(...nums) : 0) + 1;
+  return `MR-${String(next).padStart(3, "0")}/${year}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -643,7 +866,7 @@ function Sidebar({ page, setPage, onExit, open }) {
     { id: "novo", label: "Novo certificado", icon: PlusCircle },
     { id: "clientes", label: "Clientes", icon: Building2 },
     { id: "usuarios", label: "Usuários", icon: Users },
-    { id: "config", label: "Configurações", icon: Settings },
+    { id: "config", label: "Configurações", icon: SettingsIcon },
   ];
   return (
     <aside className={`app-sidebar${open ? " open" : ""}`} style={{ width: 226, flexShrink: 0, background: "var(--navy)", color: "white", display: "flex", flexDirection: "column", minHeight: "100vh" }}>
@@ -698,12 +921,13 @@ function StatusPill({ status }) {
 
 function Dashboard({ certificados, setPage }) {
   const total = certificados.length;
-  const mesAtual = certificados.filter((c) => (c.dataCalibracao || "").startsWith("2026-06") || (c.dataCalibracao || "").startsWith("2026-07")).length;
+  const dataDe = (c) => c.tipo === "mrc" ? c.dataCertificacao : c.dataCalibracao;
+  const mesAtual = certificados.filter((c) => (dataDe(c) || "").startsWith("2026-06") || (dataDe(c) || "").startsWith("2026-07")).length;
   const cards = [
     { label: "Certificados emitidos", value: total, icon: FileText },
     { label: "Emitidos este mês", value: mesAtual, icon: Clock },
-    { label: "Clientes ativos", value: new Set(certificados.map((c) => c.cliente?.razaoSocial)).size, icon: Building2 },
-    { label: "Responsáveis técnicos", value: new Set(certificados.map((c) => c.responsavel)).size || 1, icon: Users },
+    { label: "Clientes ativos", value: new Set(certificados.map((c) => c.cliente?.razaoSocial).filter(Boolean)).size, icon: Building2 },
+    { label: "Responsáveis técnicos", value: new Set(certificados.map((c) => c.responsavel).filter(Boolean)).size || 1, icon: Users },
   ];
   return (
     <div>
@@ -725,14 +949,14 @@ function Dashboard({ certificados, setPage }) {
         </div>
         <div className="table-scroll">
         <table className="data-table">
-          <thead><tr><th>Nº</th><th>Cliente</th><th>Instrumento</th><th>Data</th><th>Status</th></tr></thead>
+          <thead><tr><th>Nº</th><th>Tipo</th><th>Assunto</th><th>Data</th><th>Status</th></tr></thead>
           <tbody>
             {certificados.slice(0, 5).map((c) => (
               <tr key={c.id}>
                 <td className="mono">{c.numero}</td>
-                <td>{c.cliente?.razaoSocial}</td>
-                <td>{c.instrumento?.nome}</td>
-                <td className="mono">{c.dataCalibracao}</td>
+                <td><TypeTag tipo={c.tipo} /></td>
+                <td>{c.tipo === "mrc" ? c.mrcNome : `${c.cliente?.razaoSocial || ""} — ${c.instrumento?.nome || ""}`}</td>
+                <td className="mono">{dataDe(c)}</td>
                 <td><StatusPill status={c.status} /></td>
               </tr>
             ))}
@@ -744,11 +968,22 @@ function Dashboard({ certificados, setPage }) {
   );
 }
 
+function TypeTag({ tipo }) {
+  const isMrc = tipo === "mrc";
+  return (
+    <span className="status-pill" style={{ background: isMrc ? "rgba(61,108,138,0.12)" : "rgba(232,89,12,0.12)", color: isMrc ? "var(--steel)" : "var(--orange-dim)" }}>
+      {isMrc ? <Beaker size={12} /> : <Thermometer size={12} />} {isMrc ? "MRC" : "Calibração"}
+    </span>
+  );
+}
+
 function CertificateList({ certificados, setPage, setActiveId }) {
   const [q, setQ] = useState("");
-  const filtered = certificados.filter((c) =>
-    (c.cliente?.razaoSocial + c.numero + c.instrumento?.nome).toLowerCase().includes(q.toLowerCase())
-  );
+  const searchText = (c) => (c.tipo === "mrc"
+    ? `${c.mrcNome || ""} ${c.numero || ""} ${c.codigo || ""}`
+    : `${c.cliente?.razaoSocial || ""} ${c.numero || ""} ${c.instrumento?.nome || ""}`
+  ).toLowerCase();
+  const filtered = certificados.filter((c) => searchText(c).includes(q.toLowerCase()));
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
@@ -765,7 +1000,7 @@ function CertificateList({ certificados, setPage, setActiveId }) {
       <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
         <div className="table-scroll">
         <table className="data-table">
-          <thead><tr><th>Nº certificado</th><th>Cliente</th><th>Instrumento</th><th>Data calibração</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Nº certificado</th><th>Tipo</th><th>Assunto</th><th>Data</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {filtered.length === 0 && (
               <tr><td colSpan={6} style={{ textAlign: "center", padding: 30, color: "var(--graphite)" }}>Nenhum certificado encontrado.</td></tr>
@@ -773,9 +1008,14 @@ function CertificateList({ certificados, setPage, setActiveId }) {
             {filtered.map((c) => (
               <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => { setActiveId(c.id); setPage("ver"); }}>
                 <td className="mono">{c.numero}</td>
-                <td>{c.cliente?.razaoSocial}</td>
-                <td>{c.instrumento?.nome} <span style={{ color: "var(--graphite)" }}>({c.instrumento?.codigoId})</span></td>
-                <td className="mono">{c.dataCalibracao}</td>
+                <td><TypeTag tipo={c.tipo} /></td>
+                <td>
+                  {c.tipo === "mrc"
+                    ? <>{c.mrcNome} <span style={{ color: "var(--graphite)" }}>({c.codigo})</span></>
+                    : <>{c.cliente?.razaoSocial} — {c.instrumento?.nome}</>
+                  }
+                </td>
+                <td className="mono">{c.tipo === "mrc" ? c.dataCertificacao : c.dataCalibracao}</td>
                 <td><StatusPill status={c.status} /></td>
                 <td><ChevronRight size={16} color="var(--graphite)" /></td>
               </tr>
@@ -798,8 +1038,8 @@ function emptyForm() {
     responsavel: "",
     padroes: [{ descricao: "", codigo: "", certificado: "", validade: "" }],
     resultados: {
-      temperatura: [{ referencia: "", medido: "", k: "2,00", incerteza: "" }],
-      umidade: [{ referencia: "", medido: "", k: "2,00", incerteza: "" }],
+      temperatura: { resolucaoInstrumento: "0,1", resolucaoPadrao: "0,01", pontos: [emptyPontoIncerteza()] },
+      umidade: { resolucaoInstrumento: "1", resolucaoPadrao: "0,5", pontos: [emptyPontoIncerteza()] },
     },
   };
 }
@@ -813,48 +1053,170 @@ function Section({ title, children }) {
   );
 }
 
-function ResultTable({ label, icon: Icon, rows, onChange }) {
-  const update = (i, field, value) => {
-    const copy = rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r));
-    onChange(copy);
-  };
-  const addRow = () => onChange([...rows, { referencia: "", medido: "", k: "2,00", incerteza: "" }]);
-  const removeRow = (i) => onChange(rows.filter((_, idx) => idx !== i));
-  const erro = (r) => {
-    const ref = parseFloat(String(r.referencia).replace(",", "."));
-    const med = parseFloat(String(r.medido).replace(",", "."));
-    if (isNaN(ref) || isNaN(med)) return "—";
-    return (med - ref).toFixed(1).replace(".", ",");
-  };
+// Pequeno input compacto usado dentro dos cartões de ponto de calibração.
+function MiniField({ label, value, onChange, placeholder, width }) {
   return (
-    <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10, fontWeight: 600, fontSize: 13.5 }}>
-        <Icon size={15} color="var(--steel)" /> {label}
-      </div>
-      <div className="table-scroll">
-      <table className="data-table">
-        <thead><tr><th>Referência</th><th>Medido</th><th>Erro</th><th>k</th><th>Incerteza</th><th></th></tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td><input value={r.referencia} onChange={(e) => update(i, "referencia", e.target.value)} placeholder="20,0" /></td>
-              <td><input value={r.medido} onChange={(e) => update(i, "medido", e.target.value)} placeholder="20,1" /></td>
-              <td className="mono" style={{ color: "var(--graphite)" }}>{erro(r)}</td>
-              <td><input value={r.k} onChange={(e) => update(i, "k", e.target.value)} style={{ width: 70 }} /></td>
-              <td><input value={r.incerteza} onChange={(e) => update(i, "incerteza", e.target.value)} placeholder="0,3" style={{ width: 80 }} /></td>
-              <td>{rows.length > 1 && <button onClick={() => removeRow(i)} style={{ background: "none", border: "none" }}><Trash2 size={15} color="var(--alert)" /></button>}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      </div>
-      <button className="btn-ghost" style={{ marginTop: 10, padding: "7px 14px", fontSize: 13 }} onClick={addRow}><PlusCircle size={14} /> Adicionar leitura</button>
+    <div style={{ width: width || "auto", flex: width ? "none" : 1, minWidth: 58 }}>
+      <div style={{ fontSize: 9.5, color: "var(--graphite)", marginBottom: 3, textAlign: "center" }}>{label}</div>
+      <input value={value} onChange={onChange} placeholder={placeholder} style={{ padding: "6px 6px", fontSize: 12.5, textAlign: "center" }} />
     </div>
   );
 }
 
-function NewCertificate({ certificados, onSave, setPage }) {
+function fmtNum(n, casas = 3) {
+  if (!isFinite(n)) return "—";
+  return n.toFixed(casas).replace(".", ",");
+}
+
+// Um ponto de calibração: 5 leituras do padrão + 5 leituras do instrumento,
+// contribuições Tipo B, e o resultado do cálculo de incerteza (GUM) ao vivo.
+function PontoIncertezaCard({ ponto, index, resolucaoInstrumento, resolucaoPadrao, onChange, onRemove, canRemove }) {
+  const set = (field, v) => onChange({ ...ponto, [field]: v });
+  const setLeitura = (arrField, i, v) => {
+    const arr = [...ponto[arrField]];
+    arr[i] = v;
+    onChange({ ...ponto, [arrField]: arr });
+  };
+  const r = computeIncertezaPonto(ponto, resolucaoInstrumento, resolucaoPadrao);
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 16, marginBottom: 14, background: "var(--paper)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontWeight: 700, fontSize: 12.5 }}>Ponto {index + 1}</span>
+        {canRemove && <button onClick={onRemove} style={{ background: "none", border: "none" }}><Trash2 size={15} color="var(--alert)" /></button>}
+      </div>
+
+      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Leituras do padrão (SMP)</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {ponto.leiturasPadrao.map((v, i) => (
+          <MiniField key={i} label={`L${i + 1}`} value={v} onChange={(e) => setLeitura("leiturasPadrao", i, e.target.value)} />
+        ))}
+      </div>
+
+      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Leituras do instrumento (SMC)</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {ponto.leiturasInstrumento.map((v, i) => (
+          <MiniField key={i} label={`L${i + 1}`} value={v} onChange={(e) => setLeitura("leiturasInstrumento", i, e.target.value)} />
+        ))}
+      </div>
+
+      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Dados do padrão neste ponto</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        <MiniField label="Correção" value={ponto.correcaoPadrao} onChange={(e) => set("correcaoPadrao", e.target.value)} placeholder="0,02" />
+        <MiniField label="U certificado" value={ponto.incertezaPadrao} onChange={(e) => set("incertezaPadrao", e.target.value)} placeholder="0,05" />
+        <MiniField label="k certificado" value={ponto.kPadrao} onChange={(e) => set("kPadrao", e.target.value)} placeholder="2" />
+        <MiniField label="Deriva" value={ponto.derivaPadrao} onChange={(e) => set("derivaPadrao", e.target.value)} placeholder="0,02" />
+        <MiniField label="Outras contrib." value={ponto.outrasContribuicoes} onChange={(e) => set("outrasContribuicoes", e.target.value)} placeholder="0,1" />
+      </div>
+
+      <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 4, padding: "10px 12px", display: "flex", flexWrap: "wrap", gap: "6px 18px", fontSize: 11.5 }}>
+        <span><b>V.C.</b> <span className="mono">{fmtNum(r.valorConvencionado, 2)}</span></span>
+        <span><b>V.M.I.</b> <span className="mono">{fmtNum(r.mediaInstrumento, 2)}</span></span>
+        <span><b>Erro</b> <span className="mono">{fmtNum(r.erro, 2)}</span></span>
+        <span><b>uc</b> <span className="mono">{fmtNum(r.uc, 4)}</span></span>
+        <span><b>ν<span style={{ fontSize: 9 }}>eff</span></b> <span className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</span></span>
+        <span><b>k</b> <span className="mono">{fmtNum(r.k, 2)}</span></span>
+        <span style={{ color: "var(--steel)", fontWeight: 700 }}><b>U<span style={{ fontSize: 9 }}>exp</span></b> <span className="mono">{fmtNum(r.uexp, 2)}</span></span>
+      </div>
+    </div>
+  );
+}
+
+// Bloco completo de uma grandeza (Temperatura ou Umidade): resolução do
+// instrumento/padrão + lista de pontos de calibração com o cálculo de
+// incerteza (GUM) ao vivo, portado das fórmulas da planilha PP-014.
+function IncertezaGrandeza({ label, icon: Icon, grandeza, onChange }) {
+  const setResolucao = (field, v) => onChange({ ...grandeza, [field]: v });
+  const setPonto = (i, novoPonto) => {
+    const pontos = grandeza.pontos.map((p, idx) => (idx === i ? novoPonto : p));
+    onChange({ ...grandeza, pontos });
+  };
+  const addPonto = () => onChange({ ...grandeza, pontos: [...grandeza.pontos, emptyPontoIncerteza()] });
+  const removePonto = (i) => onChange({ ...grandeza, pontos: grandeza.pontos.filter((_, idx) => idx !== i) });
+
+  return (
+    <div style={{ marginBottom: 26 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12, fontWeight: 600, fontSize: 13.5 }}>
+        <Icon size={15} color="var(--steel)" /> {label}
+      </div>
+      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
+        <div><label className="field-label">Resolução do instrumento</label><input value={grandeza.resolucaoInstrumento} onChange={(e) => setResolucao("resolucaoInstrumento", e.target.value)} placeholder="0,1" /></div>
+        <div><label className="field-label">Resolução do padrão</label><input value={grandeza.resolucaoPadrao} onChange={(e) => setResolucao("resolucaoPadrao", e.target.value)} placeholder="0,01" /></div>
+      </div>
+
+      {grandeza.pontos.map((ponto, i) => (
+        <PontoIncertezaCard
+          key={i}
+          ponto={ponto}
+          index={i}
+          resolucaoInstrumento={grandeza.resolucaoInstrumento}
+          resolucaoPadrao={grandeza.resolucaoPadrao}
+          onChange={(novoPonto) => setPonto(i, novoPonto)}
+          onRemove={() => removePonto(i)}
+          canRemove={grandeza.pontos.length > 1}
+        />
+      ))}
+      <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={addPonto}><PlusCircle size={14} /> Adicionar ponto de calibração</button>
+    </div>
+  );
+}
+
+function emptyFormMRC() {
+  return {
+    mrcNome: "",
+    codigo: "",
+    lote: "",
+    descricao: "",
+    preparacao: "",
+    metodologia: "",
+    rastreabilidade: "",
+    finalidade: "",
+    armazenamento: "",
+    valorCertificado: { grandeza: "", valor: "", unidade: "", incerteza: "", temperaturaRef: "25,0", incertezaTemp: "0,5" },
+    dataCertificacao: "",
+    validadeLote: "",
+    responsavel: "",
+    cargo: "Signatário Autorizado",
+    informacoesAdicionais: [
+      "A integridade deste material é assegurada até a abertura da embalagem, se esta estiver íntegra.",
+      "Este MRC deve ser manuseado conforme as instruções deste certificado e a ficha de segurança correspondente.",
+      "Este certificado perde a validade caso o material seja danificado, contaminado ou alterado.",
+      "Este certificado é válido apenas para o lote produzido, não sendo extensivo a outros lotes.",
+      "A reprodução deste certificado só pode ser feita de forma integral, sem alterações.",
+    ],
+  };
+}
+
+function TypeToggle({ tipo, setTipo }) {
+  const opts = [
+    { id: "calibracao", label: "Calibração", icon: Thermometer },
+    { id: "mrc", label: "Material de Referência (MRC)", icon: Beaker },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 10, marginBottom: 22, flexWrap: "wrap" }}>
+      {opts.map((o) => (
+        <button
+          key={o.id}
+          onClick={() => setTipo(o.id)}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", borderRadius: 4,
+            border: `1.5px solid ${tipo === o.id ? "var(--orange)" : "var(--line)"}`,
+            background: tipo === o.id ? "rgba(232,89,12,0.08)" : "white",
+            color: tipo === o.id ? "var(--orange-dim)" : "var(--ink)",
+            fontWeight: 600, fontSize: 13.5,
+          }}
+        >
+          <o.icon size={15} /> {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function NewCertificate({ certificados, onSave, setPage, config }) {
+  const [tipo, setTipo] = useState("calibracao");
   const [form, setForm] = useState(emptyForm());
+  const [formMrc, setFormMrc] = useState(emptyFormMRC());
 
   const setCliente = (field, v) => setForm((f) => ({ ...f, cliente: { ...f.cliente, [field]: v } }));
   const setInstrumento = (field, v) => setForm((f) => ({ ...f, instrumento: { ...f.instrumento, [field]: v } }));
@@ -862,17 +1224,41 @@ function NewCertificate({ certificados, onSave, setPage }) {
   const addPadrao = () => setForm((f) => ({ ...f, padroes: [...f.padroes, { descricao: "", codigo: "", certificado: "", validade: "" }] }));
   const removePadrao = (i) => setForm((f) => ({ ...f, padroes: f.padroes.filter((_, idx) => idx !== i) }));
 
-  const canSave = form.cliente.razaoSocial && form.instrumento.nome && form.dataCalibracao;
+  const setMrc = (field, v) => setFormMrc((f) => ({ ...f, [field]: v }));
+  const setValorCert = (field, v) => setFormMrc((f) => ({ ...f, valorCertificado: { ...f.valorCertificado, [field]: v } }));
+  const setInfoAdicional = (i, v) => setFormMrc((f) => ({ ...f, informacoesAdicionais: f.informacoesAdicionais.map((it, idx) => (idx === i ? v : it)) }));
+  const addInfoAdicional = () => setFormMrc((f) => ({ ...f, informacoesAdicionais: [...f.informacoesAdicionais, ""] }));
+  const removeInfoAdicional = (i) => setFormMrc((f) => ({ ...f, informacoesAdicionais: f.informacoesAdicionais.filter((_, idx) => idx !== i) }));
+
+  const responsavelPadrao = config?.responsavelNome || "";
+  const cargoPadrao = config?.responsavelCargo || "Responsável Técnico";
+
+  const canSave = tipo === "calibracao"
+    ? form.cliente.razaoSocial && form.instrumento.nome && form.dataCalibracao
+    : formMrc.mrcNome && formMrc.codigo && formMrc.dataCertificacao;
 
   const handleSave = () => {
-    const novo = {
-      id: "cert-" + Date.now(),
-      numero: nextNumero(certificados),
-      os: "OS-" + String(1000 + certificados.length).slice(-4) + "/26",
-      status: "emitido",
-      ...form,
-    };
-    onSave(novo);
+    if (tipo === "calibracao") {
+      onSave({
+        id: "cert-" + Date.now(),
+        tipo: "calibracao",
+        numero: nextNumero(certificados),
+        os: "OS-" + String(1000 + certificados.length).slice(-4) + "/26",
+        status: "emitido",
+        responsavel: form.responsavel || responsavelPadrao,
+        ...form,
+      });
+    } else {
+      onSave({
+        id: "cert-" + Date.now(),
+        tipo: "mrc",
+        numero: nextNumeroMRC(certificados),
+        status: "emitido",
+        responsavel: formMrc.responsavel || responsavelPadrao,
+        cargo: formMrc.cargo || cargoPadrao,
+        ...formMrc,
+      });
+    }
   };
 
   return (
@@ -881,54 +1267,128 @@ function NewCertificate({ certificados, onSave, setPage }) {
         <button onClick={() => setPage("certificados")} style={{ background: "none", border: "none" }}><ArrowLeft size={18} /></button>
         <h1 className="disp" style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Novo certificado</h1>
       </div>
-      <p style={{ color: "var(--graphite)", fontSize: 14, marginBottom: 22 }}>Próximo número: <span className="mono">{nextNumero(certificados)}</span></p>
+      <p style={{ color: "var(--graphite)", fontSize: 14, marginBottom: 18 }}>
+        Próximo número: <span className="mono">{tipo === "calibracao" ? nextNumero(certificados) : nextNumeroMRC(certificados)}</span>
+      </p>
 
-      <Section title="Cliente">
-        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
-          <div><label className="field-label">Razão social</label><input value={form.cliente.razaoSocial} onChange={(e) => setCliente("razaoSocial", e.target.value)} placeholder="Ex: Metalúrgica Nordeste Ltda" /></div>
-          <div><label className="field-label">Código do cliente</label><input value={form.cliente.codigo} onChange={(e) => setCliente("codigo", e.target.value)} placeholder="CL-0000" /></div>
-        </div>
-        <label className="field-label">Endereço</label>
-        <input value={form.cliente.endereco} onChange={(e) => setCliente("endereco", e.target.value)} placeholder="Rua, número - bairro - cidade - UF" />
-      </Section>
+      <TypeToggle tipo={tipo} setTipo={setTipo} />
 
-      <Section title="Instrumento">
-        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-          <div><label className="field-label">Instrumento</label><input value={form.instrumento.nome} onChange={(e) => setInstrumento("nome", e.target.value)} placeholder="Termohigrômetro" /></div>
-          <div><label className="field-label">Código de identificação</label><input value={form.instrumento.codigoId} onChange={(e) => setInstrumento("codigoId", e.target.value)} placeholder="THG-12" /></div>
-          <div><label className="field-label">Fabricante</label><input value={form.instrumento.fabricante} onChange={(e) => setInstrumento("fabricante", e.target.value)} /></div>
-          <div><label className="field-label">Modelo</label><input value={form.instrumento.modelo} onChange={(e) => setInstrumento("modelo", e.target.value)} /></div>
-          <div><label className="field-label">Número de série</label><input value={form.instrumento.numeroSerie} onChange={(e) => setInstrumento("numeroSerie", e.target.value)} /></div>
-          <div><label className="field-label">Resolução</label><input value={form.instrumento.resolucao} onChange={(e) => setInstrumento("resolucao", e.target.value)} placeholder="0,1 °C / 1 % ur" /></div>
-        </div>
-        <label className="field-label">Faixa de calibração</label>
-        <input value={form.instrumento.faixa} onChange={(e) => setInstrumento("faixa", e.target.value)} placeholder="15 a 30 °C / 45 a 80 % ur" />
-      </Section>
+      {tipo === "calibracao" ? (
+        <>
+          <Section title="Cliente">
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
+              <div><label className="field-label">Razão social</label><input value={form.cliente.razaoSocial} onChange={(e) => setCliente("razaoSocial", e.target.value)} placeholder="Ex: Metalúrgica Nordeste Ltda" /></div>
+              <div><label className="field-label">Código do cliente</label><input value={form.cliente.codigo} onChange={(e) => setCliente("codigo", e.target.value)} placeholder="CL-0000" /></div>
+            </div>
+            <label className="field-label">Endereço</label>
+            <input value={form.cliente.endereco} onChange={(e) => setCliente("endereco", e.target.value)} placeholder="Rua, número - bairro - cidade - UF" />
+          </Section>
 
-      <Section title="Padrões utilizados">
-        {form.padroes.map((p, i) => (
-          <div key={i} className="form-grid-padrao" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 10, marginBottom: 10, alignItems: "end" }}>
-            <div><label className="field-label">Descrição</label><input value={p.descricao} onChange={(e) => setPadrao(i, "descricao", e.target.value)} placeholder="Termohigrômetro Testo 650" /></div>
-            <div><label className="field-label">Código</label><input value={p.codigo} onChange={(e) => setPadrao(i, "codigo", e.target.value)} /></div>
-            <div><label className="field-label">Certificado</label><input value={p.certificado} onChange={(e) => setPadrao(i, "certificado", e.target.value)} /></div>
-            <div><label className="field-label">Validade</label><input value={p.validade} onChange={(e) => setPadrao(i, "validade", e.target.value)} placeholder="2026-11" /></div>
-            {form.padroes.length > 1 && <button onClick={() => removePadrao(i)} style={{ background: "none", border: "none" }}><Trash2 size={16} color="var(--alert)" /></button>}
-          </div>
-        ))}
-        <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={addPadrao}><PlusCircle size={14} /> Adicionar padrão</button>
-      </Section>
+          <Section title="Instrumento">
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+              <div><label className="field-label">Instrumento</label><input value={form.instrumento.nome} onChange={(e) => setInstrumento("nome", e.target.value)} placeholder="Termohigrômetro" /></div>
+              <div><label className="field-label">Código de identificação</label><input value={form.instrumento.codigoId} onChange={(e) => setInstrumento("codigoId", e.target.value)} placeholder="THG-12" /></div>
+              <div><label className="field-label">Fabricante</label><input value={form.instrumento.fabricante} onChange={(e) => setInstrumento("fabricante", e.target.value)} /></div>
+              <div><label className="field-label">Modelo</label><input value={form.instrumento.modelo} onChange={(e) => setInstrumento("modelo", e.target.value)} /></div>
+              <div><label className="field-label">Número de série</label><input value={form.instrumento.numeroSerie} onChange={(e) => setInstrumento("numeroSerie", e.target.value)} /></div>
+              <div><label className="field-label">Resolução</label><input value={form.instrumento.resolucao} onChange={(e) => setInstrumento("resolucao", e.target.value)} placeholder="0,1 °C / 1 % ur" /></div>
+            </div>
+            <label className="field-label">Faixa de calibração</label>
+            <input value={form.instrumento.faixa} onChange={(e) => setInstrumento("faixa", e.target.value)} placeholder="15 a 30 °C / 45 a 80 % ur" />
+          </Section>
 
-      <Section title="Resultados">
-        <ResultTable label="Temperatura (°C)" icon={Thermometer} rows={form.resultados.temperatura} onChange={(rows) => setForm((f) => ({ ...f, resultados: { ...f.resultados, temperatura: rows } }))} />
-        <ResultTable label="Umidade relativa (% ur)" icon={Droplets} rows={form.resultados.umidade} onChange={(rows) => setForm((f) => ({ ...f, resultados: { ...f.resultados, umidade: rows } }))} />
-      </Section>
+          <Section title="Padrões utilizados">
+            {form.padroes.map((p, i) => (
+              <div key={i} className="form-grid-padrao" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 10, marginBottom: 10, alignItems: "end" }}>
+                <div><label className="field-label">Descrição</label><input value={p.descricao} onChange={(e) => setPadrao(i, "descricao", e.target.value)} placeholder="Termohigrômetro Testo 650" /></div>
+                <div><label className="field-label">Código</label><input value={p.codigo} onChange={(e) => setPadrao(i, "codigo", e.target.value)} /></div>
+                <div><label className="field-label">Certificado</label><input value={p.certificado} onChange={(e) => setPadrao(i, "certificado", e.target.value)} /></div>
+                <div><label className="field-label">Validade</label><input value={p.validade} onChange={(e) => setPadrao(i, "validade", e.target.value)} placeholder="2026-11" /></div>
+                {form.padroes.length > 1 && <button onClick={() => removePadrao(i)} style={{ background: "none", border: "none" }}><Trash2 size={16} color="var(--alert)" /></button>}
+              </div>
+            ))}
+            <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={addPadrao}><PlusCircle size={14} /> Adicionar padrão</button>
+          </Section>
 
-      <Section title="Emissão">
-        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-          <div><label className="field-label">Data da calibração</label><input type="date" value={form.dataCalibracao} onChange={(e) => setForm((f) => ({ ...f, dataCalibracao: e.target.value }))} /></div>
-          <div><label className="field-label">Responsável técnico</label><input value={form.responsavel} onChange={(e) => setForm((f) => ({ ...f, responsavel: e.target.value }))} placeholder="Eng. Nome Sobrenome" /></div>
-        </div>
-      </Section>
+          <Section title="Resultados">
+            <IncertezaGrandeza label="Temperatura (°C)" icon={Thermometer} grandeza={form.resultados.temperatura} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, temperatura: g } }))} />
+            <IncertezaGrandeza label="Umidade relativa (% ur)" icon={Droplets} grandeza={form.resultados.umidade} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, umidade: g } }))} />
+          </Section>
+
+          <Section title="Emissão">
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <div><label className="field-label">Data da calibração</label><input type="date" value={form.dataCalibracao} onChange={(e) => setForm((f) => ({ ...f, dataCalibracao: e.target.value }))} /></div>
+              <div><label className="field-label">Responsável técnico</label><input value={form.responsavel} onChange={(e) => setForm((f) => ({ ...f, responsavel: e.target.value }))} placeholder={responsavelPadrao || "Eng. Nome Sobrenome"} /></div>
+            </div>
+          </Section>
+        </>
+      ) : (
+        <>
+          <Section title="Identificação do MRC">
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
+              <div><label className="field-label">Nome do MRC</label><input value={formMrc.mrcNome} onChange={(e) => setMrc("mrcNome", e.target.value)} placeholder="Ex: Solução Padrão de Condutividade 1,413 mS/cm" /></div>
+              <div><label className="field-label">Código</label><input value={formMrc.codigo} onChange={(e) => setMrc("codigo", e.target.value)} placeholder="TRCOND1413" /></div>
+            </div>
+            <label className="field-label">Lote</label>
+            <input value={formMrc.lote} onChange={(e) => setMrc("lote", e.target.value)} placeholder="0626-TRCOND1413-0091" />
+          </Section>
+
+          <Section title="Descrição e preparação">
+            <label className="field-label">Descrição do MRC</label>
+            <input value={formMrc.descricao} onChange={(e) => setMrc("descricao", e.target.value)} placeholder="Do que é composto o material de referência" style={{ marginBottom: 14 }} />
+            <label className="field-label">Preparação do MRC</label>
+            <input value={formMrc.preparacao} onChange={(e) => setMrc("preparacao", e.target.value)} placeholder="Como o material foi preparado e envasado" />
+          </Section>
+
+          <Section title="Metodologia e rastreabilidade">
+            <label className="field-label">Metodologia analítica</label>
+            <input value={formMrc.metodologia} onChange={(e) => setMrc("metodologia", e.target.value)} placeholder="Como o valor certificado foi obtido" style={{ marginBottom: 14 }} />
+            <label className="field-label">Rastreabilidade</label>
+            <input value={formMrc.rastreabilidade} onChange={(e) => setMrc("rastreabilidade", e.target.value)} placeholder="Como a rastreabilidade metrológica foi garantida" />
+          </Section>
+
+          <Section title="Uso e armazenamento">
+            <label className="field-label">Finalidade de uso</label>
+            <input value={formMrc.finalidade} onChange={(e) => setMrc("finalidade", e.target.value)} placeholder="Para que esse MRC deve ser usado" style={{ marginBottom: 14 }} />
+            <label className="field-label">Armazenamento e manipulação</label>
+            <input value={formMrc.armazenamento} onChange={(e) => setMrc("armazenamento", e.target.value)} placeholder="Condições de armazenamento e cuidados" />
+          </Section>
+
+          <Section title="Valor certificado e incerteza de medição">
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
+              <div><label className="field-label">Grandeza</label><input value={formMrc.valorCertificado.grandeza} onChange={(e) => setValorCert("grandeza", e.target.value)} placeholder="Condutividade eletrolítica" /></div>
+              <div><label className="field-label">Unidade</label><input value={formMrc.valorCertificado.unidade} onChange={(e) => setValorCert("unidade", e.target.value)} placeholder="mS/cm" /></div>
+            </div>
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 14 }}>
+              <div><label className="field-label">Valor certificado</label><input value={formMrc.valorCertificado.valor} onChange={(e) => setValorCert("valor", e.target.value)} placeholder="1,413" /></div>
+              <div><label className="field-label">Incerteza (±)</label><input value={formMrc.valorCertificado.incerteza} onChange={(e) => setValorCert("incerteza", e.target.value)} placeholder="0,01" /></div>
+              <div><label className="field-label">Temp. referência (°C)</label><input value={formMrc.valorCertificado.temperaturaRef} onChange={(e) => setValorCert("temperaturaRef", e.target.value)} placeholder="25,0" /></div>
+              <div><label className="field-label">Incerteza temp. (±°C)</label><input value={formMrc.valorCertificado.incertezaTemp} onChange={(e) => setValorCert("incertezaTemp", e.target.value)} placeholder="0,5" /></div>
+            </div>
+          </Section>
+
+          <Section title="Informações adicionais">
+            {formMrc.informacoesAdicionais.map((info, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
+                <input value={info} onChange={(e) => setInfoAdicional(i, e.target.value)} />
+                <button onClick={() => removeInfoAdicional(i)} style={{ background: "none", border: "none", flexShrink: 0 }}><Trash2 size={15} color="var(--alert)" /></button>
+              </div>
+            ))}
+            <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={addInfoAdicional}><PlusCircle size={14} /> Adicionar item</button>
+          </Section>
+
+          <Section title="Emissão">
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+              <div><label className="field-label">Data da certificação</label><input type="date" value={formMrc.dataCertificacao} onChange={(e) => setMrc("dataCertificacao", e.target.value)} /></div>
+              <div><label className="field-label">Validade do lote</label><input value={formMrc.validadeLote} onChange={(e) => setMrc("validadeLote", e.target.value)} placeholder="2027-06" /></div>
+            </div>
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <div><label className="field-label">Responsável / signatário</label><input value={formMrc.responsavel} onChange={(e) => setMrc("responsavel", e.target.value)} placeholder={responsavelPadrao || "Eng. Nome Sobrenome"} /></div>
+              <div><label className="field-label">Cargo</label><input value={formMrc.cargo} onChange={(e) => setMrc("cargo", e.target.value)} placeholder={cargoPadrao} /></div>
+            </div>
+          </Section>
+        </>
+      )}
 
       <div className="action-row" style={{ display: "flex", gap: 12 }}>
         <button className="btn-primary" disabled={!canSave} style={!canSave ? { opacity: 0.4, cursor: "not-allowed" } : {}} onClick={handleSave}>
@@ -951,19 +1411,95 @@ function FieldRow({ label, labelEn, value }) {
   );
 }
 
-function CertificateView({ cert, setPage }) {
+function BrandMark({ config, size = 30, fontSize = 16 }) {
+  const nome = config?.empresaNome || "Traço";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      {config?.logoDataUrl ? (
+        <img src={config.logoDataUrl} alt="Logo" style={{ height: size + 6, maxWidth: 110, objectFit: "contain" }} />
+      ) : (
+        <svg width={size} height={size} viewBox="0 0 26 26">
+          <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
+          <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
+          <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
+          <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+          <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+        </svg>
+      )}
+      <span className="disp" style={{ fontWeight: 700, fontSize }}>{nome}</span>
+    </div>
+  );
+}
+
+function SignatureBlock({ config, nome, cargo, cargoEn }) {
+  return (
+    <div style={{ textAlign: "center" }}>
+      {config?.assinaturaDataUrl ? (
+        <img src={config.assinaturaDataUrl} alt="Assinatura" style={{ height: 46, display: "block", margin: "0 auto 4px" }} />
+      ) : (
+        <div style={{ fontFamily: "'Playfair Display', serif", fontStyle: "italic", fontSize: 20, color: "var(--steel)", borderBottom: "1px solid var(--ink)", paddingBottom: 4, minWidth: 200 }}>
+          {nome || "—"}
+        </div>
+      )}
+      <div style={{ fontSize: 10.5, marginTop: 4, fontWeight: 600 }}>{nome || "—"}</div>
+      <div style={{ fontSize: 10, fontStyle: "italic", color: "var(--graphite)" }}>{cargo || "Responsável Técnico"}{cargoEn ? ` / ${cargoEn}` : ""}</div>
+    </div>
+  );
+}
+
+// Marca d'água discreta e repetida — reforça a autenticidade visual do documento,
+// como nos certificados de referência (papel de segurança).
+function Watermark({ text }) {
+  const label = (text || "TRAÇO").toUpperCase();
+  const rows = [0, 1, 2, 3, 4, 5];
+  return (
+    <div className="cert-watermark">
+      {rows.map((r) => (
+        <div
+          key={r}
+          style={{
+            position: "absolute", left: "-20%", top: `${r * 17 - 4}%`, width: "140%",
+            display: "flex", justifyContent: "space-between", whiteSpace: "nowrap",
+            transform: "rotate(-27deg)", transformOrigin: "left center",
+          }}
+        >
+          {[0, 1, 2].map((c) => (
+            <span
+              key={c}
+              className="disp"
+              style={{ fontSize: 24, fontWeight: 700, color: "var(--ink)", opacity: 0.035, letterSpacing: "0.08em" }}
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Rodapé em texto simples com endereço/telefone/e-mail — no padrão dos certificados
+// de referência (linha única, centralizada, sem elementos coloridos).
+function CertFooter({ config }) {
+  const empresaNome = config?.empresaNome || "Traço";
+  const parts = [config?.endereco, config?.telefone ? `Tel: ${config.telefone}` : null, config?.email].filter(Boolean);
+  return (
+    <div className="cert-footer-bar">
+      <div style={{ fontWeight: 700, marginBottom: parts.length ? 2 : 0 }}>{empresaNome}</div>
+      {parts.length > 0 && <div>{parts.join("  ·  ")}</div>}
+    </div>
+  );
+}
+
+
+function CertificateView({ cert, setPage, config }) {
   if (!cert) return null;
-  const erro = (ref, med) => {
-    const r = parseFloat(String(ref).replace(",", "."));
-    const m = parseFloat(String(med).replace(",", "."));
-    if (isNaN(r) || isNaN(m)) return "—";
-    return (m - r).toFixed(1).replace(".", ",");
-  };
   const fmtDate = (iso) => {
     if (!iso) return "—";
     const [y, m, d] = iso.split("-");
     return d ? `${d}/${m}/${y}` : iso;
   };
+  const empresaNome = config?.empresaNome || "Traço";
 
   return (
     <div>
@@ -977,25 +1513,18 @@ function CertificateView({ cert, setPage }) {
       {/* ===== PÁGINA 1 — identificação ===== */}
       <div className="cert-doc" style={{ maxWidth: 780, margin: "0 auto 24px", padding: "36px 40px 0 60px" }}>
         <div className="cert-diagonal" />
+        <Watermark text={empresaNome} />
+        <div className="cert-content">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <h2 className="cert-title" style={{ fontSize: 30, margin: "0 0 2px" }}>Certificado de Calibração</h2>
-            <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--graphite)" }}>Calibration Certificate issued by Traço</div>
+            <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--graphite)" }}>Calibration Certificate issued by {empresaNome}</div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <svg width="30" height="30" viewBox="0 0 26 26">
-              <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
-              <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
-              <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
-              <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
-              <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
-            </svg>
-            <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>Traço</span>
-          </div>
+          <BrandMark config={config} />
         </div>
 
         <div style={{ fontSize: 11, textAlign: "center", color: "var(--graphite)", margin: "10px 0 20px", lineHeight: 1.5 }}>
-          Laboratório de calibração operando conforme a ABNT NBR ISO/IEC 17025, com emissão rastreada pela plataforma Traço
+          Laboratório de calibração operando conforme a ABNT NBR ISO/IEC 17025{config?.acreditacaoNumero ? `, sob acreditação Nº ${config.acreditacaoNumero}` : ""}, com emissão rastreada pela plataforma Traço
         </div>
 
         <div className="cert-section-title"><span>Identificação do Certificado</span><span className="en">Certificate Data</span></div>
@@ -1078,39 +1607,25 @@ function CertificateView({ cert, setPage }) {
             <div>Data da Emissão <i>/ Issued on</i></div>
             <div className="mono" style={{ fontWeight: 600, color: "var(--ink)" }}>{fmtDate(cert.dataCalibracao)}</div>
           </div>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontFamily: "'Playfair Display', serif", fontStyle: "italic", fontSize: 20, color: "var(--steel)", borderBottom: "1px solid var(--ink)", paddingBottom: 4, minWidth: 200 }}>
-              {cert.responsavel || "—"}
-            </div>
-            <div style={{ fontSize: 10.5, marginTop: 4 }}>{cert.responsavel || "—"}</div>
-            <div style={{ fontSize: 10, fontStyle: "italic", color: "var(--graphite)" }}>Responsável Técnico / Technical Manager</div>
-          </div>
+          <SignatureBlock config={config} nome={cert.responsavel} cargo="Responsável Técnico" cargoEn="Technical Manager" />
           <div style={{ textAlign: "right", fontSize: 10, color: "var(--seal-green)" }}>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 600 }}><ShieldCheck size={13} /> Assinado digitalmente</div>
             <div style={{ color: "var(--graphite)", marginTop: 2 }}>{cert.numero}</div>
           </div>
         </div>
 
-        <div className="cert-footer-bar" style={{ margin: "0 -40px 0 -60px" }}>
-          <span>Traço — Plataforma de Certificados de Calibração</span><span>&middot;</span><span>Documento gerado eletronicamente</span>
         </div>
+        <CertFooter config={config} />
       </div>
 
       {/* ===== PÁGINA 2 — folha de resultado ===== */}
       <div className="cert-doc cert-page-break" style={{ maxWidth: 780, margin: "0 auto", padding: "36px 40px 0 60px" }}>
         <div className="cert-diagonal" />
+        <Watermark text={empresaNome} />
+        <div className="cert-content">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
           <h2 className="cert-title" style={{ fontSize: 22, margin: 0 }}>Certificado de Calibração</h2>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <svg width="24" height="24" viewBox="0 0 26 26">
-              <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
-              <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
-              <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
-              <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
-              <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
-            </svg>
-            <span className="disp" style={{ fontWeight: 700, fontSize: 15 }}>Traço</span>
-          </div>
+          <BrandMark config={config} size={24} fontSize={15} />
         </div>
 
         <div className="cert-section-title"><span>Identificação do Certificado</span><span className="en">Certificate Data</span></div>
@@ -1122,38 +1637,257 @@ function CertificateView({ cert, setPage }) {
         </div>
 
         <div className="cert-section-title"><span>Folha de Resultado</span><span className="en">Results Sheet</span></div>
-        <p className="cert-note">Valor de Referência — valor indicado no instrumento padrão. Valor Medido — valor medido no instrumento em calibração. Erro de Medição = Valor Medido − Valor de Referência.</p>
+        <p className="cert-note">V.C. — valor convencionado do padrão (média das leituras + correção do certificado do padrão). V.M.I. — valor médio indicado pelo instrumento em calibração. Erro de Medição = V.M.I. − V.C. Incerteza calculada segundo o GUM (ISO/IEC Guia 98-3), com graus de liberdade efetivos por Welch-Satterthwaite e fator k de Student a 95,45% de confiança.</p>
 
-        {["temperatura", "umidade"].map((g) =>
-          cert.resultados?.[g]?.length > 0 && (
+        {["temperatura", "umidade"].map((g) => {
+          const grandeza = cert.resultados?.[g];
+          if (!grandeza?.pontos?.length) return null;
+          return (
             <div key={g} style={{ margin: "18px 0" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
                 {g === "temperatura" ? <Thermometer size={13} /> : <Droplets size={13} />} {g === "temperatura" ? "Temperatura" : "Umidade"}
               </div>
               <div className="table-scroll">
               <table className="data-table">
-                <thead><tr><th>Valor de Referência</th><th>Valor Medido</th><th>Erro de Medição</th><th>k</th><th>Incerteza de Medição</th></tr></thead>
-                <tbody>{cert.resultados[g].map((r, i) => (
-                  <tr key={i}>
-                    <td className="mono">{r.referencia || "—"}</td><td className="mono">{r.medido || "—"}</td>
-                    <td className="mono">{erro(r.referencia, r.medido)}</td>
-                    <td className="mono">{r.k}</td><td className="mono">{r.incerteza || "—"}</td>
-                  </tr>
-                ))}</tbody>
+                <thead><tr><th>V.C.</th><th>V.M.I.</th><th>Erro</th><th>Incerteza Expandida</th><th>k</th><th>ν<span style={{ fontSize: 8 }}>eff</span></th></tr></thead>
+                <tbody>{grandeza.pontos.map((ponto, i) => {
+                  const r = computeIncertezaPonto(ponto, grandeza.resolucaoInstrumento, grandeza.resolucaoPadrao);
+                  return (
+                    <tr key={i}>
+                      <td className="mono">{fmtNum(r.valorConvencionado, 2)}</td>
+                      <td className="mono">{fmtNum(r.mediaInstrumento, 2)}</td>
+                      <td className="mono">{fmtNum(r.erro, 2)}</td>
+                      <td className="mono">{fmtNum(r.uexp, 2)}</td>
+                      <td className="mono">{r.k.toFixed(2).replace(".", ",")}</td>
+                      <td className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</td>
+                    </tr>
+                  );
+                })}</tbody>
               </table>
               </div>
             </div>
-          )
-        )}
+          );
+        })}
 
         <div style={{ height: 40 }} />
-        <div className="cert-footer-bar" style={{ margin: "0 -40px 0 -60px" }}>
-          <span>Traço — Plataforma de Certificados de Calibração</span><span>&middot;</span><span>Documento gerado eletronicamente</span>
         </div>
+        <CertFooter config={config} />
       </div>
     </div>
   );
 }
+
+/* ---- MRC — Certificado de Material de Referência (padrão Elus) ---- */
+
+function MRCCertificateView({ cert, setPage, config }) {
+  if (!cert) return null;
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    const [y, m, d] = iso.split("-");
+    return d ? `${d}/${m}/${y}` : iso;
+  };
+  const fmtMonthYear = (iso) => {
+    if (!iso) return "—";
+    if (!iso.includes("-")) return iso;
+    const [y, m] = iso.split("-");
+    const meses = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+    const idx = parseInt(m, 10) - 1;
+    return meses[idx] ? `${meses[idx]}-${y.slice(-2)}` : iso;
+  };
+  const empresaNome = config?.empresaNome || "Traço";
+  const vc = cert.valorCertificado || {};
+
+  const MrcSection = ({ title, children }) => (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{title}</div>
+      <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--ink)", margin: 0 }}>{children}</p>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="cert-toolbar no-print" style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
+        <button onClick={() => setPage("certificados")} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 500 }}>
+          <ArrowLeft size={17} /> Voltar
+        </button>
+        <button className="btn-primary" onClick={() => window.print()}><Printer size={15} /> Exportar / Imprimir PDF</button>
+      </div>
+
+      {/* ===== PÁGINA 1 ===== */}
+      <div className="cert-doc" style={{ maxWidth: 780, margin: "0 auto 24px", padding: "34px 40px" }}>
+        <Watermark text={empresaNome} />
+        <div className="cert-content">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--steel)", paddingBottom: 16, marginBottom: 18 }}>
+          <BrandMark config={config} size={44} fontSize={17} />
+          <div style={{ textAlign: "right" }}>
+            <h2 className="cert-title" style={{ fontSize: 22, margin: "0 0 2px" }}>Certificado de Material de Referência</h2>
+            <div style={{ fontSize: 10.5, fontStyle: "italic", color: "var(--graphite)" }}>Certified Reference Material Certificate</div>
+            {config?.acreditacaoNumero && (
+              <div style={{ fontSize: 10, color: "var(--steel)", fontWeight: 600, marginTop: 4 }}>
+                Número de Acreditação {config.acreditacaoNumero}{config.acreditacaoData ? ` · Data de Acreditação ${fmtDate(config.acreditacaoData)}` : ""}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>MRC: {cert.mrcNome || "—"}</div>
+        <div className="mono" style={{ fontSize: 11.5, color: "var(--graphite)", marginBottom: 22 }}>
+          Código: {cert.codigo || "—"} &nbsp;&nbsp; Lote: {cert.lote || "—"} &nbsp;&nbsp; Nº Certificado: {cert.numero} &nbsp;&nbsp; Folha 01/02
+        </div>
+
+        <MrcSection title="Descrição do MRC">{cert.descricao || "—"}</MrcSection>
+        <MrcSection title="Preparação do MRC">{cert.preparacao || "—"}</MrcSection>
+        <MrcSection title="Metodologia Analítica">{cert.metodologia || "—"}</MrcSection>
+        <MrcSection title="Rastreabilidade">{cert.rastreabilidade || "—"}</MrcSection>
+        <MrcSection title="Finalidade de uso">{cert.finalidade || "—"}</MrcSection>
+        <MrcSection title="Armazenamento e Manipulação">{cert.armazenamento || "—"}</MrcSection>
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Valor Certificado e Incerteza de Medição</div>
+          <p style={{ fontSize: 12.5, lineHeight: 1.6, margin: "0 0 12px" }}>
+            O valor declarado, com sua respectiva incerteza expandida, é baseado na incerteza combinada dos estudos de homogeneidade, estabilidade e caracterização, para um nível de confiança de aproximadamente 95% (k = 2).
+          </p>
+          <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 4, padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <span style={{ fontWeight: 600, fontSize: 13.5 }}>{vc.grandeza || "—"}</span>
+            <span className="mono" style={{ fontSize: 14.5, fontWeight: 700, color: "var(--steel)" }}>
+              {vc.valor || "—"} {vc.unidade} ± {vc.incerteza} {vc.unidade} @ {vc.temperaturaRef}°C ± {vc.incertezaTemp}°C
+            </span>
+          </div>
+        </div>
+
+        <table style={{ fontSize: 12, marginBottom: 8 }}>
+          <tbody>
+            <tr><td style={{ padding: "3px 10px 3px 0", color: "var(--graphite)" }}>A certificação foi realizada no dia:</td><td className="mono" style={{ fontWeight: 600 }}>{fmtDate(cert.dataCertificacao)}</td></tr>
+            <tr><td style={{ padding: "3px 10px 3px 0", color: "var(--graphite)" }}>O lote referente a este certificado tem validade até:</td><td className="mono" style={{ fontWeight: 600 }}>{fmtMonthYear(cert.validadeLote)}</td></tr>
+          </tbody>
+        </table>
+
+        </div>
+        <CertFooter config={config} />
+      </div>
+
+      {/* ===== PÁGINA 2 ===== */}
+      <div className="cert-doc cert-page-break" style={{ maxWidth: 780, margin: "0 auto", padding: "34px 40px" }}>
+        <Watermark text={empresaNome} />
+        <div className="cert-content">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--steel)", paddingBottom: 16, marginBottom: 18 }}>
+          <BrandMark config={config} size={34} fontSize={15} />
+          <div style={{ textAlign: "right" }}>
+            <h2 className="cert-title" style={{ fontSize: 18, margin: 0 }}>Certificado de Material de Referência</h2>
+          </div>
+        </div>
+
+        <div className="mono" style={{ fontSize: 11.5, color: "var(--graphite)", marginBottom: 20 }}>
+          MRC: {cert.mrcNome} &nbsp;&nbsp; Nº Certificado: {cert.numero} &nbsp;&nbsp; Folha 02/02
+        </div>
+
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Informações Adicionais</div>
+        <ul style={{ margin: "0 0 26px", padding: "0 0 0 18px", fontSize: 12, lineHeight: 1.7 }}>
+          {(cert.informacoesAdicionais || []).map((info, i) => (
+            <li key={i}>{info}</li>
+          ))}
+        </ul>
+
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 14 }}>Responsável Técnico</div>
+        <SignatureBlock config={config} nome={cert.responsavel} cargo={cert.cargo || "Signatário Autorizado"} />
+
+        <div style={{ height: 30 }} />
+        </div>
+        <CertFooter config={config} />
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({ config, onSave }) {
+  const [form, setForm] = useState(config);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => { setForm(config); }, [config]);
+
+  const set = (field, v) => setForm((s) => ({ ...s, [field]: v }));
+  const handleLogo = (e) => {
+    const f = e.target.files[0];
+    if (f) fileToDataUrl(f, (dataUrl) => set("logoDataUrl", dataUrl));
+  };
+  const handleAssinatura = (e) => {
+    const f = e.target.files[0];
+    if (f) fileToDataUrl(f, (dataUrl) => set("assinaturaDataUrl", dataUrl));
+  };
+  const save = () => {
+    onSave(form);
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2200);
+  };
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <h1 className="disp" style={{ fontSize: 26, fontWeight: 700, marginBottom: 4 }}>Configurações</h1>
+      <p style={{ color: "var(--graphite)", fontSize: 14.5, marginBottom: 22 }}>
+        Esses dados são aplicados automaticamente em todos os certificados emitidos — logo, endereço, acreditação e assinatura do responsável técnico.
+      </p>
+
+      <Section title="Identidade do laboratório">
+        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
+          <div><label className="field-label">Razão social</label><input value={form.empresaNome} onChange={(e) => set("empresaNome", e.target.value)} placeholder="Ex: Traço Laboratório de Calibração Ltda" /></div>
+          <div><label className="field-label">Nº de acreditação</label><input value={form.acreditacaoNumero} onChange={(e) => set("acreditacaoNumero", e.target.value)} placeholder="PMR-003" /></div>
+        </div>
+        <label className="field-label">Endereço</label>
+        <input value={form.endereco} onChange={(e) => set("endereco", e.target.value)} placeholder="Rua, número - bairro - cidade - UF - CEP" style={{ marginBottom: 14 }} />
+        <div style={{ maxWidth: 240 }}>
+          <label className="field-label">Data de acreditação</label>
+          <input type="date" value={form.acreditacaoData} onChange={(e) => set("acreditacaoData", e.target.value)} />
+        </div>
+      </Section>
+
+      <Section title="Logo da empresa">
+        <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+          <div style={{ width: 96, height: 96, border: "1.5px dashed var(--line)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--paper)", overflow: "hidden", flexShrink: 0 }}>
+            {form.logoDataUrl ? <img src={form.logoDataUrl} alt="Logo" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <ImageIcon size={26} color="var(--graphite)" />}
+          </div>
+          <div>
+            <label className="btn-ghost" style={{ display: "inline-flex" }}>
+              <Upload size={15} /> Enviar logo
+              <input type="file" accept="image/*" onChange={handleLogo} style={{ display: "none" }} />
+            </label>
+            {form.logoDataUrl && (
+              <button className="btn-ghost" style={{ marginLeft: 10 }} onClick={() => set("logoDataUrl", null)}>Remover</button>
+            )}
+            <p style={{ fontSize: 12, color: "var(--graphite)", marginTop: 8, maxWidth: 320 }}>Aparece no cabeçalho de todos os certificados. Se não enviar uma logo, o símbolo padrão do Traço é usado.</p>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Responsável técnico">
+        <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
+          <div><label className="field-label">Nome</label><input value={form.responsavelNome} onChange={(e) => set("responsavelNome", e.target.value)} placeholder="Eng. Nome Sobrenome" /></div>
+          <div><label className="field-label">Cargo</label><input value={form.responsavelCargo} onChange={(e) => set("responsavelCargo", e.target.value)} placeholder="Responsável Técnico" /></div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+          <div style={{ width: 140, height: 70, border: "1.5px dashed var(--line)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--paper)", overflow: "hidden", flexShrink: 0 }}>
+            {form.assinaturaDataUrl ? <img src={form.assinaturaDataUrl} alt="Assinatura" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <PenTool size={22} color="var(--graphite)" />}
+          </div>
+          <div>
+            <label className="btn-ghost" style={{ display: "inline-flex" }}>
+              <Upload size={15} /> Enviar assinatura
+              <input type="file" accept="image/*" onChange={handleAssinatura} style={{ display: "none" }} />
+            </label>
+            {form.assinaturaDataUrl && (
+              <button className="btn-ghost" style={{ marginLeft: 10 }} onClick={() => set("assinaturaDataUrl", null)}>Remover</button>
+            )}
+            <p style={{ fontSize: 12, color: "var(--graphite)", marginTop: 8, maxWidth: 320 }}>Se não enviar uma imagem de assinatura, o nome digitado aparece em estilo manuscrito nos certificados.</p>
+          </div>
+        </div>
+      </Section>
+
+      <div className="action-row" style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <button className="btn-primary" onClick={save}><Check size={16} /> Salvar configurações</button>
+        {savedFlash && <span style={{ fontSize: 13, color: "var(--seal-green)", fontWeight: 600 }}>Configurações salvas.</span>}
+      </div>
+    </div>
+  );
+}
+
 
 function Placeholder({ title }) {
   return (
@@ -1171,9 +1905,11 @@ function AppShell({ onExit }) {
   const [activeId, setActiveId] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [config, setConfig] = useState(defaultConfig());
 
   useEffect(() => {
     loadCertificados().then((list) => { setCertificados(list); setLoaded(true); });
+    loadConfig().then(setConfig);
   }, []);
 
   const handleSave = useCallback((novo) => {
@@ -1184,6 +1920,11 @@ function AppShell({ onExit }) {
     });
     setActiveId(novo.id);
     setPage("ver");
+  }, []);
+
+  const handleSaveConfig = useCallback((cfg) => {
+    setConfig(cfg);
+    saveConfig(cfg);
   }, []);
 
   const activeCert = certificados.find((c) => c.id === activeId);
@@ -1209,15 +1950,17 @@ function AppShell({ onExit }) {
           ) : page === "certificados" ? (
             <CertificateList certificados={certificados} setPage={setPage} setActiveId={setActiveId} />
           ) : page === "novo" ? (
-            <NewCertificate certificados={certificados} onSave={handleSave} setPage={setPage} />
+            <NewCertificate certificados={certificados} onSave={handleSave} setPage={setPage} config={config} />
           ) : page === "ver" ? (
-            <CertificateView cert={activeCert} setPage={setPage} />
+            activeCert?.tipo === "mrc"
+              ? <MRCCertificateView cert={activeCert} setPage={setPage} config={config} />
+              : <CertificateView cert={activeCert} setPage={setPage} config={config} />
           ) : page === "clientes" ? (
             <Placeholder title="Clientes" />
           ) : page === "usuarios" ? (
             <Placeholder title="Usuários e permissões" />
           ) : (
-            <Placeholder title="Configurações" />
+            <SettingsPage config={config} onSave={handleSaveConfig} />
           )}
         </main>
       </div>
