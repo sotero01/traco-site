@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import QRCode from "qrcode";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 import {
   ShieldCheck, FileText, Gauge, Boxes, Users, Settings as SettingsIcon, PlusCircle, Search,
   Printer, ArrowRight, Layers, Database, Server, Cloud, Lock, ChevronRight,
   X, Trash2, Building2, Thermometer, Droplets, Menu, Check, ClipboardList,
-  BarChart3, Clock, ArrowLeft, Beaker, Image as ImageIcon, PenTool, Upload
+  BarChart3, Clock, ArrowLeft, Beaker, Image as ImageIcon, PenTool, Upload,
+  QrCode, Download
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -461,6 +465,94 @@ function computeIncertezaPonto(ponto, resolucaoInstrumento, resolucaoPadrao) {
     mediaPadrao, mediaInstrumento, nPadrao, nInstr,
     valorConvencionado, erro, uc_smc, uc_smp, uc, veff, k, uexp,
   };
+}
+
+/* ==================================================================== */
+/* Verificação por QR Code — o certificado carrega, dentro do próprio    */
+/* QR, um resumo assinado (checksum leve) dos dados essenciais, para que */
+/* a verificação funcione em qualquer dispositivo, sem precisar de       */
+/* servidor/banco de dados central.                                      */
+/* ==================================================================== */
+
+// Checksum simples (não-criptográfico) só pra sinalizar se o payload foi
+// adulterado depois de gerado — não substitui uma assinatura digital real.
+function lightChecksum(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36);
+}
+
+function base64UrlEncode(str) {
+  const b64 = btoa(unescape(encodeURIComponent(str)));
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function base64UrlDecode(str) {
+  let b64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  return decodeURIComponent(escape(atob(b64)));
+}
+
+function buildVerificationPayload(cert, config) {
+  const base = {
+    id: cert.id,
+    n: cert.numero,
+    t: cert.tipo,
+    e: config?.empresaNome || "Traço",
+    s: cert.status,
+    r: cert.responsavel || "",
+  };
+  if (cert.tipo === "mrc") {
+    base.a = cert.mrcNome;
+    base.d = cert.dataCertificacao;
+    base.c = cert.codigo;
+    base.l = cert.lote;
+  } else {
+    base.a = `${cert.cliente?.razaoSocial || ""} — ${cert.instrumento?.nome || ""}`;
+    base.d = cert.dataCalibracao;
+    base.c = cert.instrumento?.codigoId || "";
+  }
+  const payloadStr = JSON.stringify(base);
+  const chk = lightChecksum(payloadStr);
+  return base64UrlEncode(JSON.stringify({ d: base, c: chk }));
+}
+
+function decodeVerificationPayload(encoded) {
+  try {
+    const parsed = JSON.parse(base64UrlDecode(encoded));
+    const expected = lightChecksum(JSON.stringify(parsed.d));
+    return { data: parsed.d, valid: expected === parsed.c };
+  } catch {
+    return null;
+  }
+}
+
+function buildVerificationUrl(cert, config) {
+  const payload = buildVerificationPayload(cert, config);
+  const origin = typeof window !== "undefined" ? window.location.origin + window.location.pathname : "";
+  return `${origin}?v=${payload}`;
+}
+
+// Captura os "cartões" do certificado (um por página) e monta um PDF real,
+// multi-página, em vez de depender só da caixa de impressão do navegador.
+async function downloadCertificatePdf(pageElements, filename) {
+  const pdf = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+
+  for (let i = 0; i < pageElements.length; i++) {
+    const el = pageElements[i];
+    if (!el) continue;
+    const canvas = await html2canvas(el, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
+    const imgData = canvas.toDataURL("image/png");
+    const ratio = Math.min((pageWidth - 40) / canvas.width, (pageHeight - 40) / canvas.height);
+    const w = canvas.width * ratio;
+    const h = canvas.height * ratio;
+    if (i > 0) pdf.addPage();
+    pdf.addImage(imgData, "PNG", (pageWidth - w) / 2, 20, w, h);
+  }
+  pdf.save(filename);
 }
 
 function seedData() {
@@ -1447,6 +1539,37 @@ function SignatureBlock({ config, nome, cargo, cargoEn }) {
   );
 }
 
+// QR Code de verificação — ao ser lido, abre uma página pública (sem login)
+// que exibe os dados essenciais do certificado. O próprio QR carrega o
+// resumo do certificado embutido, então funciona em qualquer dispositivo,
+// mesmo sem um banco de dados compartilhado.
+function VerificationQR({ cert, config, size = 92 }) {
+  const [dataUrl, setDataUrl] = useState(null);
+  const url = buildVerificationUrl(cert, config);
+
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(url, { margin: 1, width: size * 2, color: { dark: "#191F1B", light: "#FFFFFF" } })
+      .then((d) => { if (!cancelled) setDataUrl(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [url, size]);
+
+  return (
+    <div style={{ textAlign: "center" }}>
+      {dataUrl ? (
+        <img src={dataUrl} alt="QR Code de verificação" style={{ width: size, height: size, display: "block", margin: "0 auto" }} />
+      ) : (
+        <div style={{ width: size, height: size, border: "1px dashed var(--line)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <QrCode size={20} color="var(--graphite)" />
+        </div>
+      )}
+      <div style={{ fontSize: 8.5, color: "var(--graphite)", marginTop: 4, maxWidth: size + 20 }}>Verifique a autenticidade</div>
+    </div>
+  );
+}
+
+
 // Marca d'água discreta e repetida — reforça a autenticidade visual do documento,
 // como nos certificados de referência (papel de segurança).
 function Watermark({ text }) {
@@ -1492,6 +1615,81 @@ function CertFooter({ config }) {
 }
 
 
+// Página pública de verificação — é o que abre quando alguém lê o QR Code
+// do certificado. Não exige login: os dados essenciais vêm embutidos no
+// próprio link (payload + checksum), então funciona em qualquer aparelho.
+function VerificationPage({ payload }) {
+  const result = decodeVerificationPayload(payload);
+
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    if (!iso.includes("-")) return iso;
+    const [y, m, d] = iso.split("-");
+    return d ? `${d}/${m}/${y}` : iso;
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px", background: "var(--paper)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 28 }}>
+        <svg width="26" height="26" viewBox="0 0 26 26">
+          <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
+          <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
+          <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
+          <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+          <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+        </svg>
+        <span className="disp" style={{ fontWeight: 700, fontSize: 19 }}>Traço</span>
+      </div>
+
+      <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 8, padding: 32, maxWidth: 460, width: "100%" }}>
+        {!result ? (
+          <div style={{ textAlign: "center" }}>
+            <ShieldCheck size={32} color="var(--alert)" style={{ marginBottom: 14 }} />
+            <h2 className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Não foi possível ler este código</h2>
+            <p style={{ fontSize: 13.5, color: "var(--graphite)" }}>O link de verificação está incompleto ou foi corrompido.</p>
+          </div>
+        ) : (
+          <>
+            <div style={{ textAlign: "center", marginBottom: 22 }}>
+              {result.valid ? (
+                <>
+                  <ShieldCheck size={32} color="var(--seal-green)" style={{ marginBottom: 10 }} />
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--seal-green)" }}>Certificado verificado</div>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck size={32} color="var(--alert)" style={{ marginBottom: 10 }} />
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--alert)" }}>Dados não conferem</div>
+                  <div style={{ fontSize: 12, color: "var(--graphite)", marginTop: 4 }}>O conteúdo deste link pode ter sido alterado após a emissão.</div>
+                </>
+              )}
+            </div>
+
+            <table style={{ width: "100%", fontSize: 13.5, borderCollapse: "collapse" }}>
+              <tbody>
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)", width: 140 }}>Nº do certificado</td><td className="mono" style={{ fontWeight: 700 }}>{result.data.n}</td></tr>
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Tipo</td><td><TypeTag tipo={result.data.t} /></td></tr>
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Assunto</td><td>{result.data.a}</td></tr>
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Data</td><td className="mono">{fmtDate(result.data.d)}</td></tr>
+                {result.data.c && <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Código</td><td className="mono">{result.data.c}</td></tr>}
+                {result.data.l && <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Lote</td><td className="mono">{result.data.l}</td></tr>}
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Responsável</td><td>{result.data.r || "—"}</td></tr>
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Emitido por</td><td style={{ fontWeight: 600 }}>{result.data.e}</td></tr>
+                <tr><td style={{ padding: "6px 0", color: "var(--graphite)" }}>Status</td><td><StatusPill status={result.data.s} /></td></tr>
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
+
+      <p style={{ fontSize: 11.5, color: "var(--graphite)", marginTop: 22, maxWidth: 420, textAlign: "center", lineHeight: 1.6 }}>
+        Esta verificação lê os dados que estavam codificados no QR Code no momento da emissão. Ela não substitui uma assinatura digital com certificado ICP-Brasil.
+      </p>
+    </div>
+  );
+}
+
+
 function CertificateView({ cert, setPage, config }) {
   if (!cert) return null;
   const fmtDate = (iso) => {
@@ -1500,6 +1698,18 @@ function CertificateView({ cert, setPage, config }) {
     return d ? `${d}/${m}/${y}` : iso;
   };
   const empresaNome = config?.empresaNome || "Traço";
+  const page1Ref = useRef(null);
+  const page2Ref = useRef(null);
+  const [baixando, setBaixando] = useState(false);
+
+  const handleBaixarPdf = async () => {
+    setBaixando(true);
+    try {
+      await downloadCertificatePdf([page1Ref.current, page2Ref.current], `${(cert.numero || "certificado").replace(/\//g, "-")}.pdf`);
+    } finally {
+      setBaixando(false);
+    }
+  };
 
   return (
     <div>
@@ -1507,11 +1717,16 @@ function CertificateView({ cert, setPage, config }) {
         <button onClick={() => setPage("certificados")} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 500 }}>
           <ArrowLeft size={17} /> Voltar
         </button>
-        <button className="btn-primary" onClick={() => window.print()}><Printer size={15} /> Exportar / Imprimir PDF</button>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn-ghost" onClick={handleBaixarPdf} disabled={baixando}>
+            <Download size={15} /> {baixando ? "Gerando PDF..." : "Baixar PDF"}
+          </button>
+          <button className="btn-primary" onClick={() => window.print()}><Printer size={15} /> Imprimir</button>
+        </div>
       </div>
 
       {/* ===== PÁGINA 1 — identificação ===== */}
-      <div className="cert-doc" style={{ maxWidth: 780, margin: "0 auto 24px", padding: "36px 40px 0 60px" }}>
+      <div className="cert-doc" ref={page1Ref} style={{ maxWidth: 780, margin: "0 auto 24px", padding: "36px 40px 0 60px" }}>
         <div className="cert-diagonal" />
         <Watermark text={empresaNome} />
         <div className="cert-content">
@@ -1602,12 +1817,13 @@ function CertificateView({ cert, setPage, config }) {
         <div className="cert-section-title" style={{ marginBottom: 6 }}><span>Procedimento de Calibração</span><span className="en">Measurement Procedure</span></div>
         <p className="cert-note" style={{ marginBottom: 26 }}>Os resultados obtidos são médias de leituras sucessivas. O instrumento em referência foi calibrado por comparação direta a instrumentos de características padrão, conforme procedimento(s) interno(s) do laboratório.</p>
 
-        <div className="cert-signature-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", paddingBottom: 20 }}>
+        <div className="cert-signature-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", paddingBottom: 20, gap: 16 }}>
           <div style={{ fontSize: 11, color: "var(--graphite)" }}>
             <div>Data da Emissão <i>/ Issued on</i></div>
             <div className="mono" style={{ fontWeight: 600, color: "var(--ink)" }}>{fmtDate(cert.dataCalibracao)}</div>
           </div>
           <SignatureBlock config={config} nome={cert.responsavel} cargo="Responsável Técnico" cargoEn="Technical Manager" />
+          <VerificationQR cert={cert} config={config} size={78} />
           <div style={{ textAlign: "right", fontSize: 10, color: "var(--seal-green)" }}>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 600 }}><ShieldCheck size={13} /> Assinado digitalmente</div>
             <div style={{ color: "var(--graphite)", marginTop: 2 }}>{cert.numero}</div>
@@ -1619,7 +1835,7 @@ function CertificateView({ cert, setPage, config }) {
       </div>
 
       {/* ===== PÁGINA 2 — folha de resultado ===== */}
-      <div className="cert-doc cert-page-break" style={{ maxWidth: 780, margin: "0 auto", padding: "36px 40px 0 60px" }}>
+      <div className="cert-doc cert-page-break" ref={page2Ref} style={{ maxWidth: 780, margin: "0 auto", padding: "36px 40px 0 60px" }}>
         <div className="cert-diagonal" />
         <Watermark text={empresaNome} />
         <div className="cert-content">
@@ -1696,6 +1912,18 @@ function MRCCertificateView({ cert, setPage, config }) {
   };
   const empresaNome = config?.empresaNome || "Traço";
   const vc = cert.valorCertificado || {};
+  const page1Ref = useRef(null);
+  const page2Ref = useRef(null);
+  const [baixando, setBaixando] = useState(false);
+
+  const handleBaixarPdf = async () => {
+    setBaixando(true);
+    try {
+      await downloadCertificatePdf([page1Ref.current, page2Ref.current], `${(cert.numero || "certificado").replace(/\//g, "-")}.pdf`);
+    } finally {
+      setBaixando(false);
+    }
+  };
 
   const MrcSection = ({ title, children }) => (
     <div style={{ marginBottom: 16 }}>
@@ -1710,11 +1938,16 @@ function MRCCertificateView({ cert, setPage, config }) {
         <button onClick={() => setPage("certificados")} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 500 }}>
           <ArrowLeft size={17} /> Voltar
         </button>
-        <button className="btn-primary" onClick={() => window.print()}><Printer size={15} /> Exportar / Imprimir PDF</button>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn-ghost" onClick={handleBaixarPdf} disabled={baixando}>
+            <Download size={15} /> {baixando ? "Gerando PDF..." : "Baixar PDF"}
+          </button>
+          <button className="btn-primary" onClick={() => window.print()}><Printer size={15} /> Imprimir</button>
+        </div>
       </div>
 
       {/* ===== PÁGINA 1 ===== */}
-      <div className="cert-doc" style={{ maxWidth: 780, margin: "0 auto 24px", padding: "34px 40px" }}>
+      <div className="cert-doc" ref={page1Ref} style={{ maxWidth: 780, margin: "0 auto 24px", padding: "34px 40px" }}>
         <Watermark text={empresaNome} />
         <div className="cert-content">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--steel)", paddingBottom: 16, marginBottom: 18 }}>
@@ -1755,19 +1988,22 @@ function MRCCertificateView({ cert, setPage, config }) {
           </div>
         </div>
 
-        <table style={{ fontSize: 12, marginBottom: 8 }}>
-          <tbody>
-            <tr><td style={{ padding: "3px 10px 3px 0", color: "var(--graphite)" }}>A certificação foi realizada no dia:</td><td className="mono" style={{ fontWeight: 600 }}>{fmtDate(cert.dataCertificacao)}</td></tr>
-            <tr><td style={{ padding: "3px 10px 3px 0", color: "var(--graphite)" }}>O lote referente a este certificado tem validade até:</td><td className="mono" style={{ fontWeight: 600 }}>{fmtMonthYear(cert.validadeLote)}</td></tr>
-          </tbody>
-        </table>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+          <table style={{ fontSize: 12, marginBottom: 8 }}>
+            <tbody>
+              <tr><td style={{ padding: "3px 10px 3px 0", color: "var(--graphite)" }}>A certificação foi realizada no dia:</td><td className="mono" style={{ fontWeight: 600 }}>{fmtDate(cert.dataCertificacao)}</td></tr>
+              <tr><td style={{ padding: "3px 10px 3px 0", color: "var(--graphite)" }}>O lote referente a este certificado tem validade até:</td><td className="mono" style={{ fontWeight: 600 }}>{fmtMonthYear(cert.validadeLote)}</td></tr>
+            </tbody>
+          </table>
+          <VerificationQR cert={cert} config={config} size={72} />
+        </div>
 
         </div>
         <CertFooter config={config} />
       </div>
 
       {/* ===== PÁGINA 2 ===== */}
-      <div className="cert-doc cert-page-break" style={{ maxWidth: 780, margin: "0 auto", padding: "34px 40px" }}>
+      <div className="cert-doc cert-page-break" ref={page2Ref} style={{ maxWidth: 780, margin: "0 auto", padding: "34px 40px" }}>
         <Watermark text={empresaNome} />
         <div className="cert-content">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid var(--steel)", paddingBottom: 16, marginBottom: 18 }}>
@@ -1974,6 +2210,28 @@ function AppShell({ onExit }) {
 
 export default function TracoApp() {
   const [view, setView] = useState("landing");
+  const [verifyPayload, setVerifyPayload] = useState(undefined);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      setVerifyPayload(params.get("v"));
+    } catch {
+      setVerifyPayload(null);
+    }
+  }, []);
+
+  if (verifyPayload === undefined) return null;
+
+  if (verifyPayload) {
+    return (
+      <div className="traco-root">
+        <GlobalStyle />
+        <VerificationPage payload={verifyPayload} />
+      </div>
+    );
+  }
+
   return (
     <div className="traco-root">
       <GlobalStyle />
