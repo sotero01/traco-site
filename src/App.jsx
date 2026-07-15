@@ -555,6 +555,38 @@ async function downloadCertificatePdf(pageElements, filename) {
   pdf.save(filename);
 }
 
+// Gera uma folha A4 com várias cópias da mesma etiqueta, no tamanho real de
+// impressão (60 x 38 mm) — pronta para imprimir em papel adesivo e colar
+// nos equipamentos.
+async function downloadEtiquetaSheetPdf(labelElement, filename) {
+  if (!labelElement) return;
+  const canvas = await html2canvas(labelElement, { scale: 4, backgroundColor: "#ffffff", useCORS: true });
+  const imgData = canvas.toDataURL("image/png");
+
+  const pdf = new jsPDF({ unit: "mm", format: "a4" });
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+
+  const labelW = 60, labelH = 38;
+  const marginX = 10, marginY = 12, gapX = 5, gapY = 5;
+  const cols = Math.floor((pageW - marginX * 2 + gapX) / (labelW + gapX));
+  const rows = Math.floor((pageH - marginY * 2 + gapY) / (labelH + gapY));
+
+  const totalW = cols * labelW + (cols - 1) * gapX;
+  const totalH = rows * labelH + (rows - 1) * gapY;
+  const startX = (pageW - totalW) / 2;
+  const startY = (pageH - totalH) / 2;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = startX + c * (labelW + gapX);
+      const y = startY + r * (labelH + gapY);
+      pdf.addImage(imgData, "PNG", x, y, labelW, labelH);
+    }
+  }
+  pdf.save(filename);
+}
+
 function seedData() {
   return [
     {
@@ -563,6 +595,7 @@ function seedData() {
       numero: "TRC-0001/26",
       os: "OS-0044/26",
       dataCalibracao: "2026-06-18",
+      proximaCalibracao: "2027-06-18",
       responsavel: "Eng. Marina Alcântara",
       status: "emitido",
       cliente: {
@@ -1127,6 +1160,7 @@ function emptyForm() {
     cliente: { razaoSocial: "", endereco: "", codigo: "" },
     instrumento: { nome: "", fabricante: "", modelo: "", numeroSerie: "", codigoId: "", faixa: "", resolucao: "" },
     dataCalibracao: "",
+    proximaCalibracao: "",
     responsavel: "",
     padroes: [{ descricao: "", codigo: "", certificado: "", validade: "" }],
     resultados: {
@@ -1408,10 +1442,12 @@ function NewCertificate({ certificados, onSave, setPage, config }) {
           </Section>
 
           <Section title="Emissão">
-            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
               <div><label className="field-label">Data da calibração</label><input type="date" value={form.dataCalibracao} onChange={(e) => setForm((f) => ({ ...f, dataCalibracao: e.target.value }))} /></div>
-              <div><label className="field-label">Responsável técnico</label><input value={form.responsavel} onChange={(e) => setForm((f) => ({ ...f, responsavel: e.target.value }))} placeholder={responsavelPadrao || "Eng. Nome Sobrenome"} /></div>
+              <div><label className="field-label">Próxima calibração</label><input type="date" value={form.proximaCalibracao} onChange={(e) => setForm((f) => ({ ...f, proximaCalibracao: e.target.value }))} /></div>
             </div>
+            <label className="field-label">Responsável técnico</label>
+            <input value={form.responsavel} onChange={(e) => setForm((f) => ({ ...f, responsavel: e.target.value }))} placeholder={responsavelPadrao || "Eng. Nome Sobrenome"} />
           </Section>
         </>
       ) : (
@@ -1539,49 +1575,142 @@ function SignatureBlock({ config, nome, cargo, cargoEn }) {
   );
 }
 
+// Hook compartilhado de geração de QR Code (usado pelo selo de verificação
+// e pela etiqueta de identificação do equipamento).
+function useQrDataUrl(url, pixelSize, darkColor = "#191F1B") {
+  const [dataUrl, setDataUrl] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(url, { margin: 1, width: pixelSize * 4, errorCorrectionLevel: "M", color: { dark: darkColor, light: "#FFFFFF" } })
+      .then((d) => { if (!cancelled) setDataUrl(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [url, pixelSize, darkColor]);
+  return dataUrl;
+}
+
 // QR Code de verificação — ao ser lido, abre uma página pública (sem login)
 // que exibe os dados essenciais do certificado. O próprio QR carrega o
 // resumo do certificado embutido, então funciona em qualquer dispositivo,
 // mesmo sem um banco de dados compartilhado.
-function VerificationQR({ cert, config, size = 92 }) {
-  const [dataUrl, setDataUrl] = useState(null);
+function VerificationQR({ cert, config, size = 130 }) {
   const url = buildVerificationUrl(cert, config);
-
-  useEffect(() => {
-    let cancelled = false;
-    QRCode.toDataURL(url, { margin: 1, width: size * 2, color: { dark: "#191F1B", light: "#FFFFFF" } })
-      .then((d) => { if (!cancelled) setDataUrl(d); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [url, size]);
+  const dataUrl = useQrDataUrl(url, size);
 
   return (
     <div style={{ textAlign: "center" }}>
       {dataUrl ? (
-        <img src={dataUrl} alt="QR Code de verificação" style={{ width: size, height: size, display: "block", margin: "0 auto" }} />
+        <img src={dataUrl} alt="QR Code de verificação" style={{ width: size, height: size, display: "block", margin: "0 auto", imageRendering: "pixelated" }} />
       ) : (
         <div style={{ width: size, height: size, border: "1px dashed var(--line)", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <QrCode size={20} color="var(--graphite)" />
         </div>
       )}
-      <div style={{ fontSize: 8.5, color: "var(--graphite)", marginTop: 4, maxWidth: size + 20 }}>Verifique a autenticidade</div>
+      <div style={{ fontSize: 9, color: "var(--graphite)", marginTop: 5, maxWidth: size + 20 }}>Verifique a autenticidade</div>
+    </div>
+  );
+
+}
+
+
+// Etiqueta de identificação — pensada para impressão e colagem no próprio
+// equipamento (como as etiquetas de calibração que os laboratórios usam).
+// Preenchida automaticamente com os dados da empresa e do certificado.
+function EtiquetaRow({ label, value }) {
+  return (
+    <div style={{ fontSize: 13, lineHeight: 1.5, borderBottom: "1.5px solid var(--ink)", paddingBottom: 2, marginBottom: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <span style={{ fontWeight: 400 }}>{label} </span>
+      <span style={{ fontWeight: 700 }}>{value || "—"}</span>
     </div>
   );
 }
 
+function Etiqueta({ cert, config, innerRef }) {
+  const isMrc = cert.tipo === "mrc";
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    if (!iso.includes("-")) return iso;
+    const [y, m, d] = iso.split("-");
+    return d ? `${d}/${m}/${y}` : iso;
+  };
+  const fmtMonthYear = (iso) => {
+    if (!iso) return "—";
+    if (!iso.includes("-")) return iso;
+    const [y, m] = iso.split("-");
+    return `-/${m}/${y}`;
+  };
+
+  const titulo = isMrc ? "Material de Referência" : "Calibração";
+  const identificacao = isMrc ? (cert.codigo || cert.lote) : cert.instrumento?.codigoId;
+  const dataRef = isMrc ? cert.dataCertificacao : cert.dataCalibracao;
+  const proxima = isMrc ? fmtMonthYear(cert.validadeLote) : fmtDate(cert.proximaCalibracao);
+
+  const url = buildVerificationUrl(cert, config);
+  const qr = useQrDataUrl(url, 240, "#111111");
+  const empresaNome = config?.empresaNome || "Traço";
+
+  return (
+    <div
+      ref={innerRef}
+      style={{
+        position: "relative", overflow: "hidden",
+        width: "min(340px, 100%)", background: "white", borderRadius: 14, border: "1px solid var(--line)",
+        boxShadow: "0 2px 10px rgba(0,0,0,0.06)", padding: "18px 20px", boxSizing: "border-box",
+      }}
+    >
+      <Watermark text={empresaNome} fontSize={11} rowCount={9} />
+
+      <div style={{ position: "absolute", top: 12, right: 16, zIndex: 2 }}>
+        {config?.logoDataUrl ? (
+          <img src={config.logoDataUrl} alt="Logo" style={{ height: 22, maxWidth: 76, objectFit: "contain" }} />
+        ) : (
+          <svg width="20" height="20" viewBox="0 0 26 26">
+            <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
+            <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
+            <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
+            <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+            <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+          </svg>
+        )}
+      </div>
+
+      <div className="cert-content">
+        <h3 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 24, textAlign: "center", margin: "0 0 14px", color: "var(--ink)" }}>
+          {titulo}
+        </h3>
+        <div style={{ display: "flex", gap: 14 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <EtiquetaRow label="N°/ Cert.:" value={cert.numero} />
+            <EtiquetaRow label="Ident.:" value={identificacao} />
+            <EtiquetaRow label={isMrc ? "Data Cert.:" : "Data Cal.:"} value={fmtDate(dataRef)} />
+            <EtiquetaRow label={isMrc ? "Validade:" : "Próx. Cal.:"} value={proxima} />
+          </div>
+          <div style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+            {qr ? (
+              <img src={qr} alt="QR Code" style={{ width: 92, height: 92, imageRendering: "pixelated" }} />
+            ) : (
+              <div style={{ width: 92, height: 92, border: "1px dashed var(--line)" }} />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Marca d'água discreta e repetida — reforça a autenticidade visual do documento,
 // como nos certificados de referência (papel de segurança).
-function Watermark({ text }) {
+function Watermark({ text, fontSize = 24, rowCount = 6 }) {
   const label = (text || "TRAÇO").toUpperCase();
-  const rows = [0, 1, 2, 3, 4, 5];
+  const rows = Array.from({ length: rowCount }, (_, i) => i);
+  const rowPct = 100 / (rowCount - 1.4);
   return (
     <div className="cert-watermark">
       {rows.map((r) => (
         <div
           key={r}
           style={{
-            position: "absolute", left: "-20%", top: `${r * 17 - 4}%`, width: "140%",
+            position: "absolute", left: "-20%", top: `${r * rowPct - 4}%`, width: "140%",
             display: "flex", justifyContent: "space-between", whiteSpace: "nowrap",
             transform: "rotate(-27deg)", transformOrigin: "left center",
           }}
@@ -1590,7 +1719,7 @@ function Watermark({ text }) {
             <span
               key={c}
               className="disp"
-              style={{ fontSize: 24, fontWeight: 700, color: "var(--ink)", opacity: 0.035, letterSpacing: "0.08em" }}
+              style={{ fontSize, fontWeight: 700, color: "var(--ink)", opacity: 0.035, letterSpacing: "0.08em" }}
             >
               {label}
             </span>
@@ -1700,7 +1829,9 @@ function CertificateView({ cert, setPage, config }) {
   const empresaNome = config?.empresaNome || "Traço";
   const page1Ref = useRef(null);
   const page2Ref = useRef(null);
+  const labelRef = useRef(null);
   const [baixando, setBaixando] = useState(false);
+  const [baixandoEtiqueta, setBaixandoEtiqueta] = useState(false);
 
   const handleBaixarPdf = async () => {
     setBaixando(true);
@@ -1711,6 +1842,15 @@ function CertificateView({ cert, setPage, config }) {
     }
   };
 
+  const handleBaixarEtiqueta = async () => {
+    setBaixandoEtiqueta(true);
+    try {
+      await downloadEtiquetaSheetPdf(labelRef.current, `etiqueta-${(cert.numero || "certificado").replace(/\//g, "-")}.pdf`);
+    } finally {
+      setBaixandoEtiqueta(false);
+    }
+  };
+
   return (
     <div>
       <div className="cert-toolbar no-print" style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
@@ -1718,6 +1858,9 @@ function CertificateView({ cert, setPage, config }) {
           <ArrowLeft size={17} /> Voltar
         </button>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn-ghost" onClick={handleBaixarEtiqueta} disabled={baixandoEtiqueta}>
+            <QrCode size={15} /> {baixandoEtiqueta ? "Gerando etiqueta..." : "Baixar Etiqueta"}
+          </button>
           <button className="btn-ghost" onClick={handleBaixarPdf} disabled={baixando}>
             <Download size={15} /> {baixando ? "Gerando PDF..." : "Baixar PDF"}
           </button>
@@ -1889,6 +2032,15 @@ function CertificateView({ cert, setPage, config }) {
         </div>
         <CertFooter config={config} />
       </div>
+
+      <div className="no-print" style={{ maxWidth: 780, margin: "0 auto", textAlign: "center" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 12 }}>
+          Etiqueta de identificação — para imprimir e colar no equipamento
+        </div>
+        <div style={{ display: "inline-block" }}>
+          <Etiqueta cert={cert} config={config} innerRef={labelRef} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1914,7 +2066,9 @@ function MRCCertificateView({ cert, setPage, config }) {
   const vc = cert.valorCertificado || {};
   const page1Ref = useRef(null);
   const page2Ref = useRef(null);
+  const labelRef = useRef(null);
   const [baixando, setBaixando] = useState(false);
+  const [baixandoEtiqueta, setBaixandoEtiqueta] = useState(false);
 
   const handleBaixarPdf = async () => {
     setBaixando(true);
@@ -1922,6 +2076,15 @@ function MRCCertificateView({ cert, setPage, config }) {
       await downloadCertificatePdf([page1Ref.current, page2Ref.current], `${(cert.numero || "certificado").replace(/\//g, "-")}.pdf`);
     } finally {
       setBaixando(false);
+    }
+  };
+
+  const handleBaixarEtiqueta = async () => {
+    setBaixandoEtiqueta(true);
+    try {
+      await downloadEtiquetaSheetPdf(labelRef.current, `etiqueta-${(cert.numero || "certificado").replace(/\//g, "-")}.pdf`);
+    } finally {
+      setBaixandoEtiqueta(false);
     }
   };
 
@@ -1939,6 +2102,9 @@ function MRCCertificateView({ cert, setPage, config }) {
           <ArrowLeft size={17} /> Voltar
         </button>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn-ghost" onClick={handleBaixarEtiqueta} disabled={baixandoEtiqueta}>
+            <QrCode size={15} /> {baixandoEtiqueta ? "Gerando etiqueta..." : "Baixar Etiqueta"}
+          </button>
           <button className="btn-ghost" onClick={handleBaixarPdf} disabled={baixando}>
             <Download size={15} /> {baixando ? "Gerando PDF..." : "Baixar PDF"}
           </button>
@@ -2030,6 +2196,15 @@ function MRCCertificateView({ cert, setPage, config }) {
         <div style={{ height: 30 }} />
         </div>
         <CertFooter config={config} />
+      </div>
+
+      <div className="no-print" style={{ maxWidth: 780, margin: "0 auto", textAlign: "center" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 12 }}>
+          Etiqueta de identificação — para imprimir e colar na embalagem
+        </div>
+        <div style={{ display: "inline-block" }}>
+          <Etiqueta cert={cert} config={config} innerRef={labelRef} />
+        </div>
       </div>
     </div>
   );
