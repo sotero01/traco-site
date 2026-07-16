@@ -316,6 +316,7 @@ function defaultConfig() {
     responsavelNome: "",
     responsavelCargo: "Responsável Técnico",
     assinaturaDataUrl: null,
+    corDestaque: "#E8590C",
   };
 }
 async function loadConfig() {
@@ -1618,7 +1619,7 @@ function VerificationQR({ cert, config, size = 130 }) {
 // Preenchida automaticamente com os dados da empresa e do certificado.
 function EtiquetaRow({ label, value }) {
   return (
-    <div style={{ fontSize: 13, lineHeight: 1.5, borderBottom: "1.5px solid var(--ink)", paddingBottom: 2, marginBottom: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+    <div style={{ fontSize: 12.5, lineHeight: 1.5, borderBottom: "1.5px solid var(--ink)", paddingBottom: 2, marginBottom: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
       <span style={{ fontWeight: 400 }}>{label} </span>
       <span style={{ fontWeight: 700 }}>{value || "—"}</span>
     </div>
@@ -1640,7 +1641,7 @@ function Etiqueta({ cert, config, innerRef }) {
     return `-/${m}/${y}`;
   };
 
-  const titulo = isMrc ? "Material de Referência" : "Calibração";
+  const tipoDocumento = isMrc ? "Certificado de Material de Referência" : "Certificado de Calibração";
   const identificacao = isMrc ? (cert.codigo || cert.lote) : cert.instrumento?.codigoId;
   const dataRef = isMrc ? cert.dataCertificacao : cert.dataCalibracao;
   const proxima = isMrc ? fmtMonthYear(cert.validadeLote) : fmtDate(cert.proximaCalibracao);
@@ -1648,6 +1649,7 @@ function Etiqueta({ cert, config, innerRef }) {
   const url = buildVerificationUrl(cert, config);
   const qr = useQrDataUrl(url, 240, "#111111");
   const empresaNome = config?.empresaNome || "Traço";
+  const cor = config?.corDestaque || "#E8590C";
 
   return (
     <div
@@ -1655,42 +1657,33 @@ function Etiqueta({ cert, config, innerRef }) {
       style={{
         position: "relative", overflow: "hidden",
         width: "min(340px, 100%)", background: "white", borderRadius: 14, border: "1px solid var(--line)",
-        boxShadow: "0 2px 10px rgba(0,0,0,0.06)", padding: "18px 20px", boxSizing: "border-box",
+        boxShadow: "0 2px 10px rgba(0,0,0,0.06)", padding: "16px 20px 18px", boxSizing: "border-box",
       }}
     >
       <Watermark text={empresaNome} fontSize={11} rowCount={9} />
 
-      <div style={{ position: "absolute", top: 12, right: 16, zIndex: 2 }}>
-        {config?.logoDataUrl ? (
-          <img src={config.logoDataUrl} alt="Logo" style={{ height: 22, maxWidth: 76, objectFit: "contain" }} />
-        ) : (
-          <svg width="20" height="20" viewBox="0 0 26 26">
-            <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
-            <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
-            <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
-            <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
-            <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
-          </svg>
-        )}
-      </div>
-
       <div className="cert-content">
-        <h3 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 24, textAlign: "center", margin: "0 0 14px", color: "var(--ink)" }}>
-          {titulo}
-        </h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, borderBottom: `3px solid ${cor}`, paddingBottom: 8, marginBottom: 12 }}>
+          <span className="disp" style={{ fontSize: 19, fontWeight: 700, color: cor, lineHeight: 1.15, wordBreak: "break-word" }}>{empresaNome}</span>
+          {config?.logoDataUrl && (
+            <img src={config.logoDataUrl} alt="Logo" style={{ height: 24, maxWidth: 68, objectFit: "contain", flexShrink: 0 }} />
+          )}
+        </div>
+
         <div style={{ display: "flex", gap: 14 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <EtiquetaRow label="N°/ Cert.:" value={cert.numero} />
-            <EtiquetaRow label="Ident.:" value={identificacao} />
+            <EtiquetaRow label="Certificado Nº:" value={cert.numero} />
+            <EtiquetaRow label="Identificação:" value={identificacao} />
             <EtiquetaRow label={isMrc ? "Data Cert.:" : "Data Cal.:"} value={fmtDate(dataRef)} />
-            <EtiquetaRow label={isMrc ? "Validade:" : "Próx. Cal.:"} value={proxima} />
+            <EtiquetaRow label={isMrc ? "Validade:" : "Próxima Cal.:"} value={proxima} />
           </div>
-          <div style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+          <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 }}>
             {qr ? (
-              <img src={qr} alt="QR Code" style={{ width: 92, height: 92, imageRendering: "pixelated" }} />
+              <img src={qr} alt="QR Code" style={{ width: 86, height: 86, imageRendering: "pixelated" }} />
             ) : (
-              <div style={{ width: 92, height: 92, border: "1px dashed var(--line)" }} />
+              <div style={{ width: 86, height: 86, border: "1px dashed var(--line)" }} />
             )}
+            <span style={{ fontSize: 8, fontWeight: 600, color: "var(--graphite)", textAlign: "center", lineHeight: 1.3, maxWidth: 90 }}>{tipoDocumento}</span>
           </div>
         </div>
       </div>
@@ -2266,6 +2259,33 @@ function SettingsPage({ config, onSave }) {
             )}
             <p style={{ fontSize: 12, color: "var(--graphite)", marginTop: 8, maxWidth: 320 }}>Aparece no cabeçalho de todos os certificados. Se não enviar uma logo, o símbolo padrão do Traço é usado.</p>
           </div>
+        </div>
+      </Section>
+
+      <Section title="Cor de identidade">
+        <p style={{ fontSize: 12.5, color: "var(--graphite)", marginBottom: 14 }}>Usada na etiqueta de identificação e em outros destaques da marca. Escolha uma das cores prontas ou defina a sua.</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {["#E8590C", "#2F6F4E", "#1D4E63", "#7A3B69", "#B23A2F", "#2B2B2B"].map((cor) => (
+            <button
+              key={cor}
+              onClick={() => set("corDestaque", cor)}
+              aria-label={`Usar cor ${cor}`}
+              style={{
+                width: 34, height: 34, borderRadius: "50%", background: cor, cursor: "pointer",
+                border: form.corDestaque === cor ? "3px solid var(--ink)" : "2px solid transparent",
+                padding: 0,
+              }}
+            />
+          ))}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 6, cursor: "pointer" }}>
+            <input
+              type="color"
+              value={form.corDestaque}
+              onChange={(e) => set("corDestaque", e.target.value)}
+              style={{ width: 40, height: 34, padding: 0, border: "1.5px solid var(--line)", cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 12.5, color: "var(--graphite)" }}>Personalizada</span>
+          </label>
         </div>
       </Section>
 
