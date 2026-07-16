@@ -1657,33 +1657,35 @@ function Etiqueta({ cert, config, innerRef }) {
       style={{
         position: "relative", overflow: "hidden",
         width: "min(340px, 100%)", background: "white", borderRadius: 14, border: "1px solid var(--line)",
-        boxShadow: "0 2px 10px rgba(0,0,0,0.06)", padding: "16px 20px 18px", boxSizing: "border-box",
+        boxShadow: "0 3px 14px rgba(0,0,0,0.09)", boxSizing: "border-box",
       }}
     >
-      <Watermark text={empresaNome} fontSize={11} rowCount={9} />
+      <div style={{ background: cor, padding: "10px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <span className="disp" style={{ fontSize: 18, fontWeight: 700, color: "white", lineHeight: 1.2, wordBreak: "break-word" }}>{empresaNome}</span>
+        {config?.logoDataUrl && (
+          <div style={{ background: "white", borderRadius: 6, padding: "3px 7px", flexShrink: 0, lineHeight: 0 }}>
+            <img src={config.logoDataUrl} alt="Logo" style={{ height: 20, maxWidth: 62, objectFit: "contain", display: "block" }} />
+          </div>
+        )}
+      </div>
 
-      <div className="cert-content">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, borderBottom: `3px solid ${cor}`, paddingBottom: 8, marginBottom: 12 }}>
-          <span className="disp" style={{ fontSize: 19, fontWeight: 700, color: cor, lineHeight: 1.15, wordBreak: "break-word" }}>{empresaNome}</span>
-          {config?.logoDataUrl && (
-            <img src={config.logoDataUrl} alt="Logo" style={{ height: 24, maxWidth: 68, objectFit: "contain", flexShrink: 0 }} />
-          )}
-        </div>
+      <div style={{ position: "relative", padding: "16px 18px 18px" }}>
+        <Watermark text={empresaNome} fontSize={11} rowCount={9} />
 
-        <div style={{ display: "flex", gap: 14 }}>
+        <div className="cert-content" style={{ display: "flex", gap: 14 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <EtiquetaRow label="Certificado Nº:" value={cert.numero} />
             <EtiquetaRow label="Identificação:" value={identificacao} />
             <EtiquetaRow label={isMrc ? "Data Cert.:" : "Data Cal.:"} value={fmtDate(dataRef)} />
             <EtiquetaRow label={isMrc ? "Validade:" : "Próxima Cal.:"} value={proxima} />
           </div>
-          <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "var(--paper)", border: "1px solid var(--paper-line)", borderRadius: 10, padding: "8px 9px" }}>
             {qr ? (
-              <img src={qr} alt="QR Code" style={{ width: 86, height: 86, imageRendering: "pixelated" }} />
+              <img src={qr} alt="QR Code" style={{ width: 84, height: 84, imageRendering: "pixelated" }} />
             ) : (
-              <div style={{ width: 86, height: 86, border: "1px dashed var(--line)" }} />
+              <div style={{ width: 84, height: 84, border: "1px dashed var(--line)" }} />
             )}
-            <span style={{ fontSize: 8, fontWeight: 600, color: "var(--graphite)", textAlign: "center", lineHeight: 1.3, maxWidth: 90 }}>{tipoDocumento}</span>
+            <span style={{ fontSize: 7.5, fontWeight: 600, color: "var(--graphite)", textAlign: "center", lineHeight: 1.25, maxWidth: 90 }}>{tipoDocumento}</span>
           </div>
         </div>
       </div>
