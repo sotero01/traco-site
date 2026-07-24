@@ -7,11 +7,11 @@ import {
   Printer, ArrowRight, Layers, Database, Server, Cloud, Lock, ChevronRight,
   X, Trash2, Building2, Thermometer, Droplets, Menu, Check, ClipboardList,
   BarChart3, Clock, ArrowLeft, Beaker, Image as ImageIcon, PenTool, Upload,
-  QrCode, Download
+  QrCode, Download, Scale
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
-/* Global style — design tokens for "Traço"                            */
+/* Global style — design tokens for "Metrotech.ia"                      */
 /* ------------------------------------------------------------------ */
 const GlobalStyle = () => (
   <style>{`
@@ -342,8 +342,11 @@ function fileToDataUrl(file, cb) {
 }
 
 /* ==================================================================== */
-/* Motor de incerteza (GUM) — portado das fórmulas da planilha PP-014     */
-/* (Tipo A/B, combinação por quadratura, Welch-Satterthwaite, Student-t)  */
+/* Motor de incerteza (GUM) — portado das fórmulas da planilha PP-004     */
+/* (Calibração de Balanças/Padrões de Massa — RBC)                       */
+/* Densidade do ar (CIPM simplificada), empuxo, padrão de massa,          */
+/* legibilidade, excentricidade — combinação por quadratura,              */
+/* Welch-Satterthwaite, Student-t a 95,45%.                               */
 /* ==================================================================== */
 
 // Student-t bicaudal a 95,45% de confiança (p = 0,0455) — Anexo G, Tabela G.2
@@ -405,66 +408,97 @@ function typeBNormal(U, k) {
   return u / kk;
 }
 
-function emptyPontoIncerteza() {
+// Densidade do ar — fórmula simplificada do CIPM, igual à planilha (aba CALCULO, célula F30):
+// ρa = ((0,348444·P) − H·(0,00252·T − 0,020582)) / (273,15+T), com P em hPa, T em °C, H em %UR.
+function airDensity(pressaoHpa, tempC, umidadePct) {
+  const P = parseNum(pressaoHpa), T = parseNum(tempC), H = parseNum(umidadePct);
+  if (isNaN(P) || isNaN(T) || isNaN(H)) return NaN;
+  return ((0.348444 * P) - (H * (0.00252 * T - 0.020582))) / (273.15 + T);
+}
+
+function emptyPontoMassa() {
   return {
-    leiturasPadrao: ["", "", "", "", ""],
-    leiturasInstrumento: ["", "", "", "", ""],
+    leiturasIndicacao: ["", "", "", "", ""],
+    nominalPadrao: "",
     correcaoPadrao: "0",
     incertezaPadrao: "",
     kPadrao: "2",
     derivaPadrao: "",
-    outrasContribuicoes: "",
   };
 }
 
-// Núcleo do cálculo — reproduz a estrutura da aba "Incerteza" da planilha PP-014
-// para um ponto de calibração: incerteza do SMC (instrumento sob calibração),
-// incerteza do SMP (padrão de referência), combinação, graus de liberdade
-// efetivos (Welch-Satterthwaite) e incerteza expandida (k de Student a 95,45%).
-function computeIncertezaPonto(ponto, resolucaoInstrumento, resolucaoPadrao) {
-  const leiturasP = ponto.leiturasPadrao || [];
-  const leiturasI = ponto.leiturasInstrumento || [];
+function emptyGrandezaMassa() {
+  return {
+    resolucaoBalanca: "",
+    excentricidade: "",
+    temperaturaAr: "20",
+    umidadeAr: "50",
+    pressaoAr: "1013",
+    densidadePadrao: "8000",
+    densidadeAjuste: "8000",
+    incertezaDensidadeAr: "0,01",
+    pontos: [emptyPontoMassa()],
+  };
+}
 
-  const mediaPadrao = meanOf(leiturasP);
-  const mediaInstrumento = meanOf(leiturasI);
-  const nPadrao = countValid(leiturasP);
-  const nInstr = countValid(leiturasI);
-  const stdevPadrao = stdevOf(leiturasP);
-  const stdevInstr = stdevOf(leiturasI);
+// Núcleo do cálculo — reproduz a aba "CALCULO" da planilha PP-004 para um
+// ponto de calibração de balança: valor indicado (repetitividade + legibilidade
+// + excentricidade), valor convencional do padrão (massa nominal + correção do
+// certificado + correção por empuxo + deriva), combinação por quadratura,
+// graus de liberdade efetivos (Welch-Satterthwaite) e incerteza expandida
+// (fator k de Student a 95,45%).
+function computeMassaPonto(ponto, compartilhado) {
+  const g = compartilhado || {};
+  const leituras = ponto.leiturasIndicacao || [];
 
-  // Incerteza do SMC (instrumento sob calibração)
-  const u_Tm = nInstr > 1 ? stdevInstr / Math.sqrt(nInstr) : 0;
-  const v_Tm = nInstr > 1 ? nInstr - 1 : 0;
-  const u_resInstr = typeBRect(resolucaoInstrumento);
-  const u_outras = typeBRect(ponto.outrasContribuicoes);
-  const uc_smc = Math.sqrt(u_Tm ** 2 + u_resInstr ** 2 + u_outras ** 2);
+  const mediaIndicacao = meanOf(leituras);
+  const nIndicacao = countValid(leituras);
+  const stdevIndicacao = stdevOf(leituras);
+  const resolucao = parseNum(g.resolucaoBalanca) || 0;
 
-  // Incerteza do SMP (padrão de referência)
-  const u_Tmpad = nPadrao > 1 ? stdevPadrao / Math.sqrt(nPadrao) : 0;
-  const v_Tmpad = nPadrao > 1 ? nPadrao - 1 : 0;
+  // Valor Indicado (I): repetitividade (Tipo A) + legibilidade do zero + legibilidade
+  // da indicação (Tipo B retangular, cada uma = resolução/2 dividido por √3) + excentricidade.
+  const u_rep = nIndicacao > 1 ? stdevIndicacao / Math.sqrt(nIndicacao) : 0;
+  const v_rep = nIndicacao > 1 ? nIndicacao - 1 : 0;
+  const u_id0 = typeBRect(resolucao);
+  const u_idi = typeBRect(resolucao);
+  const u_iexc = typeBRect(g.excentricidade);
+  const u_I = Math.sqrt(u_rep ** 2 + u_id0 ** 2 + u_idi ** 2 + u_iexc ** 2);
+
+  // Massa padrão (mref): massa nominal + correção do certificado do padrão (Tipo B
+  // normal, U/k) + correção por empuxo do ar (mb) + deriva do padrão (Tipo B retangular).
+  const nominal = parseNum(ponto.nominalPadrao) || 0;
+  const correcaoCert = parseNum(ponto.correcaoPadrao) || 0;
+
+  const rhoAr = airDensity(g.pressaoAr, g.temperaturaAr, g.umidadeAr);
+  const rho0 = 1.2; // densidade do ar de referência (kg/m3)
+  const rhoPadrao = parseNum(g.densidadePadrao) || 8000;
+  const rhoAjuste = parseNum(g.densidadeAjuste) || 8000;
+  const mb = isNaN(rhoAr) ? 0 : -nominal * (rhoAr - rho0) * (1 / rhoPadrao - 1 / rhoAjuste);
+
   const u_cert = typeBNormal(ponto.incertezaPadrao, ponto.kPadrao);
-  const u_resPad = typeBRect(resolucaoPadrao);
   const u_deriva = typeBRect(ponto.derivaPadrao);
-  const uc_smp = Math.sqrt(u_Tmpad ** 2 + u_cert ** 2 + u_resPad ** 2 + u_deriva ** 2);
+  const u_rhoAr = parseNum(g.incertezaDensidadeAr) || 0;
+  const u_mb = Math.abs(nominal) * Math.abs(1 / rhoPadrao - 1 / rhoAjuste) * u_rhoAr;
+  const u_mref = Math.sqrt(u_cert ** 2 + u_mb ** 2 + u_deriva ** 2);
 
   // Combinação por quadratura
-  const uc = Math.sqrt(uc_smc ** 2 + uc_smp ** 2);
+  const uc = Math.sqrt(u_I ** 2 + u_mref ** 2);
 
-  // Graus de liberdade efetivos (Welch-Satterthwaite) — só as contribuições
-  // Tipo A entram no denominador; Tipo B (v = ∞) contribuem 0.
-  const denom = (v_Tm > 0 ? u_Tm ** 4 / v_Tm : 0) + (v_Tmpad > 0 ? u_Tmpad ** 4 / v_Tmpad : 0);
+  // Graus de liberdade efetivos (Welch-Satterthwaite) — só a repetitividade (Tipo A)
+  // entra no denominador; as contribuições Tipo B (v = ∞) contribuem 0.
+  const denom = v_rep > 0 ? u_rep ** 4 / v_rep : 0;
   const veff = (denom === 0 || uc === 0) ? Infinity : (uc ** 4) / denom;
 
   const k = studentT9545(veff);
   const uexp = uc * k;
 
-  const correcaoPadrao = parseNum(ponto.correcaoPadrao) || 0;
-  const valorConvencionado = (isNaN(mediaPadrao) ? 0 : mediaPadrao) + correcaoPadrao;
-  const erro = (isNaN(mediaInstrumento) ? 0 : mediaInstrumento) - valorConvencionado;
+  const valorConvencionado = nominal + correcaoCert + mb + (parseNum(ponto.derivaPadrao) || 0);
+  const correcao = valorConvencionado - (isNaN(mediaIndicacao) ? 0 : mediaIndicacao);
 
   return {
-    mediaPadrao, mediaInstrumento, nPadrao, nInstr,
-    valorConvencionado, erro, uc_smc, uc_smp, uc, veff, k, uexp,
+    mediaIndicacao, nIndicacao, valorConvencionado, correcao,
+    u_I, u_mref, uc, veff, k, uexp, rhoAr, mb,
   };
 }
 
@@ -500,7 +534,7 @@ function buildVerificationPayload(cert, config) {
     id: cert.id,
     n: cert.numero,
     t: cert.tipo,
-    e: config?.empresaNome || "Traço",
+    e: config?.empresaNome || "Metrotech.ia",
     s: cert.status,
     r: cert.responsavel || "",
   };
@@ -593,7 +627,7 @@ function seedData() {
     {
       id: "cert-seed-1",
       tipo: "calibracao",
-      numero: "TRC-0001/26",
+      numero: "MTI-0001/26",
       os: "OS-0044/26",
       dataCalibracao: "2026-06-18",
       proximaCalibracao: "2027-06-18",
@@ -605,33 +639,38 @@ function seedData() {
         codigo: "CL-1029",
       },
       instrumento: {
-        nome: "Termohigrômetro",
-        fabricante: "Kasvi",
+        nome: "Balança",
+        fabricante: "Toledo do Brasil",
         modelo: "Não consta",
         numeroSerie: "Não consta",
-        codigoId: "THG-08",
-        faixa: "15 a 30 °C / 45 a 80 % ur",
-        resolucao: "0,1 °C / 1 % ur",
+        codigoId: "BAL-04",
+        tipo: "digital",
+        unidade: "g",
+        faixaNominal: "0 a 6000 g",
+        faixaCalibracao: "0 a 6000 g",
+        faixaUso: "0 a 6000 g",
+        d1: "0,01",
+        d2: "N/A",
+        e: "0,01",
+        cargaMinima: "1 g",
       },
       padroes: [
-        { descricao: "Termohigrômetro Testo 650", codigo: "TRC-H-004", certificado: "RBC-9002214", validade: "2026-11" },
+        { descricao: "Conjunto de massas padrão classe F1", codigo: "PM-004", certificado: "RBC-8871234", validade: "2027-03" },
       ],
       resultados: {
-        temperatura: {
-          resolucaoInstrumento: "0,1",
-          resolucaoPadrao: "0,01",
+        massa: {
+          resolucaoBalanca: "0,01",
+          excentricidade: "0,02",
+          temperaturaAr: "23",
+          umidadeAr: "55",
+          pressaoAr: "1013",
+          densidadePadrao: "8000",
+          densidadeAjuste: "8000",
+          incertezaDensidadeAr: "0,01",
           pontos: [
-            { leiturasPadrao: ["14,85", "14,88", "14,87", "14,86", "14,89"], leiturasInstrumento: ["15,1", "15,1", "15,2", "15,1", "15,0"], correcaoPadrao: "0,02", incertezaPadrao: "0,05", kPadrao: "2", derivaPadrao: "0,02", outrasContribuicoes: "0,1" },
-            { leiturasPadrao: ["19,98", "20,01", "19,99", "20,00", "20,02"], leiturasInstrumento: ["20,1", "20,1", "20,1", "20,2", "20,1"], correcaoPadrao: "0,01", incertezaPadrao: "0,05", kPadrao: "2", derivaPadrao: "0,02", outrasContribuicoes: "0,1" },
-            { leiturasPadrao: ["29,95", "29,97", "29,96", "29,98", "29,94"], leiturasInstrumento: ["30,3", "30,2", "30,3", "30,4", "30,3"], correcaoPadrao: "0,03", incertezaPadrao: "0,05", kPadrao: "2", derivaPadrao: "0,02", outrasContribuicoes: "0,1" },
-          ],
-        },
-        umidade: {
-          resolucaoInstrumento: "1",
-          resolucaoPadrao: "0,5",
-          pontos: [
-            { leiturasPadrao: ["43,8", "43,9", "44,0", "43,9", "43,8"], leiturasInstrumento: ["45", "45", "46", "45", "45"], correcaoPadrao: "0", incertezaPadrao: "1,5", kPadrao: "2", derivaPadrao: "0,3", outrasContribuicoes: "0,5" },
-            { leiturasPadrao: ["63,0", "63,2", "63,3", "63,1", "63,2"], leiturasInstrumento: ["65", "65", "66", "65", "65"], correcaoPadrao: "0", incertezaPadrao: "1,5", kPadrao: "2", derivaPadrao: "0,3", outrasContribuicoes: "0,5" },
+            { leiturasIndicacao: ["100,01", "100,00", "100,01", "100,00", "100,01"], nominalPadrao: "100", correcaoPadrao: "0,002", incertezaPadrao: "0,005", kPadrao: "2", derivaPadrao: "0,001" },
+            { leiturasIndicacao: ["1000,02", "1000,01", "1000,02", "1000,01", "1000,02"], nominalPadrao: "1000", correcaoPadrao: "0,010", incertezaPadrao: "0,020", kPadrao: "2", derivaPadrao: "0,005" },
+            { leiturasIndicacao: ["5000,05", "5000,04", "5000,06", "5000,05", "5000,04"], nominalPadrao: "5000", correcaoPadrao: "0,030", incertezaPadrao: "0,060", kPadrao: "2", derivaPadrao: "0,010" },
           ],
         },
       },
@@ -673,7 +712,7 @@ function nextNumero(list) {
     .map((c) => parseInt((c.numero || "").split("-")[1]?.split("/")[0], 10))
     .filter((n) => !isNaN(n));
   const next = (nums.length ? Math.max(...nums) : 0) + 1;
-  return `TRC-${String(next).padStart(4, "0")}/${year}`;
+  return `MTI-${String(next).padStart(4, "0")}/${year}`;
 }
 
 function nextNumeroMRC(list) {
@@ -703,7 +742,7 @@ function Nav({ onEnterApp }) {
             <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
             <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
           </svg>
-          <span className="disp" style={{ fontWeight: 700, fontSize: 19 }}>Traço</span>
+          <span className="disp" style={{ fontWeight: 700, fontSize: 19 }}>Metrotech.ia</span>
         </div>
         <nav className="hide-mobile" style={{ display: "flex", gap: 30, fontSize: 14.5, fontWeight: 500 }}>
           <a href="#recursos">Recursos</a>
@@ -752,7 +791,7 @@ function Hero({ onEnterApp }) {
             Certificados de calibração,<br />emitidos na velocidade do laboratório.
           </h1>
           <p style={{ fontSize: 17.5, color: "var(--graphite)", lineHeight: 1.6, maxWidth: 520, marginBottom: 32 }}>
-            Traço automatiza a emissão de certificados de conformidade e calibração conforme normas do Inmetro — do cadastro do instrumento até o PDF assinado. Sem limite de certificados, de usuários, ou de crescimento.
+            Metrotech.ia automatiza a emissão de certificados de conformidade e calibração conforme normas do Inmetro — do cadastro do instrumento até o PDF assinado. Sem limite de certificados, de usuários, ou de crescimento.
           </p>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
             <button className="btn-primary" onClick={onEnterApp}>Acessar demonstração <ArrowRight size={17} /></button>
@@ -766,7 +805,7 @@ function Hero({ onEnterApp }) {
             <div style={{ textAlign: "center", color: "white" }}>
               <div style={{ fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.55)", marginBottom: 8 }}>Certificado nº</div>
               <div className="mono" style={{ fontSize: 26, fontWeight: 600, color: "var(--orange)" }}>
-                TRC-{String(count).padStart(4, "0")}/26
+                MTI-{String(count).padStart(4, "0")}/26
               </div>
               <div style={{ fontSize: 11, marginTop: 10, color: "rgba(255,255,255,0.55)" }}>emitido agora &middot; assinado digitalmente</div>
             </div>
@@ -832,7 +871,7 @@ function TraceabilityChain() {
     { label: "INMETRO / RBC", sub: "padrão nacional" },
     { label: "Laboratório padrão", sub: "instrumento de referência" },
     { label: "Instrumento do cliente", sub: "calibrado em campo ou bancada" },
-    { label: "Certificado Traço", sub: "emitido e assinado" },
+    { label: "Certificado Metrotech.ia", sub: "emitido e assinado" },
   ];
   return (
     <section id="rastreabilidade" style={{ background: "var(--navy)", color: "white", padding: "84px 24px" }}>
@@ -959,7 +998,7 @@ function Footer() {
   return (
     <footer style={{ borderTop: "1px solid var(--line)", padding: "36px 24px", background: "white" }}>
       <div style={{ maxWidth: 1180, margin: "0 auto", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, fontSize: 13, color: "var(--graphite)" }}>
-        <span>© 2026 Traço. Plataforma de certificados de calibração.</span>
+        <span>© 2026 Metrotech.ia. Plataforma de certificados de calibração.</span>
         <span>Conforme ABNT NBR ISO/IEC 17025 &middot; requisitos Inmetro/CGCRE</span>
       </div>
     </footer>
@@ -1004,7 +1043,7 @@ function Sidebar({ page, setPage, onExit, open }) {
           <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="white" strokeWidth="1.6" />
           <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="white" strokeWidth="1.6" />
         </svg>
-        <span className="disp" style={{ fontWeight: 700, fontSize: 17 }}>Traço</span>
+        <span className="disp" style={{ fontWeight: 700, fontSize: 17 }}>Metrotech.ia</span>
       </div>
       <div style={{ padding: "16px 20px", fontSize: 11.5, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
         Metalúrgica Nordeste Ltda
@@ -1098,7 +1137,7 @@ function TypeTag({ tipo }) {
   const isMrc = tipo === "mrc";
   return (
     <span className="status-pill" style={{ background: isMrc ? "rgba(61,108,138,0.12)" : "rgba(232,89,12,0.12)", color: isMrc ? "var(--steel)" : "var(--orange-dim)" }}>
-      {isMrc ? <Beaker size={12} /> : <Thermometer size={12} />} {isMrc ? "MRC" : "Calibração"}
+      {isMrc ? <Beaker size={12} /> : <Scale size={12} />} {isMrc ? "MRC" : "Calibração"}
     </span>
   );
 }
@@ -1159,14 +1198,18 @@ function CertificateList({ certificados, setPage, setActiveId }) {
 function emptyForm() {
   return {
     cliente: { razaoSocial: "", endereco: "", codigo: "" },
-    instrumento: { nome: "", fabricante: "", modelo: "", numeroSerie: "", codigoId: "", faixa: "", resolucao: "" },
+    instrumento: {
+      nome: "Balança", fabricante: "", modelo: "", numeroSerie: "", codigoId: "",
+      tipo: "digital", unidade: "g",
+      faixaNominal: "", faixaCalibracao: "", faixaUso: "",
+      d1: "", d2: "", e: "", cargaMinima: "",
+    },
     dataCalibracao: "",
     proximaCalibracao: "",
     responsavel: "",
     padroes: [{ descricao: "", codigo: "", certificado: "", validade: "" }],
     resultados: {
-      temperatura: { resolucaoInstrumento: "0,1", resolucaoPadrao: "0,01", pontos: [emptyPontoIncerteza()] },
-      umidade: { resolucaoInstrumento: "1", resolucaoPadrao: "0,5", pontos: [emptyPontoIncerteza()] },
+      massa: emptyGrandezaMassa(),
     },
   };
 }
@@ -1195,16 +1238,17 @@ function fmtNum(n, casas = 3) {
   return n.toFixed(casas).replace(".", ",");
 }
 
-// Um ponto de calibração: 5 leituras do padrão + 5 leituras do instrumento,
-// contribuições Tipo B, e o resultado do cálculo de incerteza (GUM) ao vivo.
-function PontoIncertezaCard({ ponto, index, resolucaoInstrumento, resolucaoPadrao, onChange, onRemove, canRemove }) {
+// Um ponto de calibração de balança: 5 leituras da indicação, massa nominal
+// do padrão usado nesse ponto, e os dados do certificado do padrão. O
+// resultado do cálculo de incerteza (GUM/PP-004) aparece ao vivo.
+function PontoMassaCard({ ponto, index, compartilhado, onChange, onRemove, canRemove }) {
   const set = (field, v) => onChange({ ...ponto, [field]: v });
-  const setLeitura = (arrField, i, v) => {
-    const arr = [...ponto[arrField]];
+  const setLeitura = (i, v) => {
+    const arr = [...ponto.leiturasIndicacao];
     arr[i] = v;
-    onChange({ ...ponto, [arrField]: arr });
+    onChange({ ...ponto, leiturasIndicacao: arr });
   };
-  const r = computeIncertezaPonto(ponto, resolucaoInstrumento, resolucaoPadrao);
+  const r = computeMassaPonto(ponto, compartilhado);
 
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 16, marginBottom: 14, background: "var(--paper)" }}>
@@ -1213,71 +1257,74 @@ function PontoIncertezaCard({ ponto, index, resolucaoInstrumento, resolucaoPadra
         {canRemove && <button onClick={onRemove} style={{ background: "none", border: "none" }}><Trash2 size={15} color="var(--alert)" /></button>}
       </div>
 
-      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Leituras do padrão (SMP)</div>
+      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Leituras da indicação (5x)</div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {ponto.leiturasPadrao.map((v, i) => (
-          <MiniField key={i} label={`L${i + 1}`} value={v} onChange={(e) => setLeitura("leiturasPadrao", i, e.target.value)} />
+        {ponto.leiturasIndicacao.map((v, i) => (
+          <MiniField key={i} label={`L${i + 1}`} value={v} onChange={(e) => setLeitura(i, e.target.value)} />
         ))}
       </div>
 
-      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Leituras do instrumento (SMC)</div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {ponto.leiturasInstrumento.map((v, i) => (
-          <MiniField key={i} label={`L${i + 1}`} value={v} onChange={(e) => setLeitura("leiturasInstrumento", i, e.target.value)} />
-        ))}
-      </div>
-
-      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Dados do padrão neste ponto</div>
+      <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--graphite)", marginBottom: 6 }}>Padrão de massa usado neste ponto</div>
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        <MiniField label="Correção" value={ponto.correcaoPadrao} onChange={(e) => set("correcaoPadrao", e.target.value)} placeholder="0,02" />
-        <MiniField label="U certificado" value={ponto.incertezaPadrao} onChange={(e) => set("incertezaPadrao", e.target.value)} placeholder="0,05" />
+        <MiniField label="Massa nominal" value={ponto.nominalPadrao} onChange={(e) => set("nominalPadrao", e.target.value)} placeholder="1000" />
+        <MiniField label="Correção cert." value={ponto.correcaoPadrao} onChange={(e) => set("correcaoPadrao", e.target.value)} placeholder="0,01" />
+        <MiniField label="U certificado" value={ponto.incertezaPadrao} onChange={(e) => set("incertezaPadrao", e.target.value)} placeholder="0,02" />
         <MiniField label="k certificado" value={ponto.kPadrao} onChange={(e) => set("kPadrao", e.target.value)} placeholder="2" />
-        <MiniField label="Deriva" value={ponto.derivaPadrao} onChange={(e) => set("derivaPadrao", e.target.value)} placeholder="0,02" />
-        <MiniField label="Outras contrib." value={ponto.outrasContribuicoes} onChange={(e) => set("outrasContribuicoes", e.target.value)} placeholder="0,1" />
+        <MiniField label="Deriva" value={ponto.derivaPadrao} onChange={(e) => set("derivaPadrao", e.target.value)} placeholder="0,005" />
       </div>
 
       <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 4, padding: "10px 12px", display: "flex", flexWrap: "wrap", gap: "6px 18px", fontSize: 11.5 }}>
-        <span><b>V.C.</b> <span className="mono">{fmtNum(r.valorConvencionado, 2)}</span></span>
-        <span><b>V.M.I.</b> <span className="mono">{fmtNum(r.mediaInstrumento, 2)}</span></span>
-        <span><b>Erro</b> <span className="mono">{fmtNum(r.erro, 2)}</span></span>
+        <span><b>V.C.</b> <span className="mono">{fmtNum(r.valorConvencionado, 3)}</span></span>
+        <span><b>V.M.I.</b> <span className="mono">{fmtNum(r.mediaIndicacao, 3)}</span></span>
+        <span><b>Correção</b> <span className="mono">{fmtNum(r.correcao, 3)}</span></span>
         <span><b>uc</b> <span className="mono">{fmtNum(r.uc, 4)}</span></span>
         <span><b>ν<span style={{ fontSize: 9 }}>eff</span></b> <span className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</span></span>
         <span><b>k</b> <span className="mono">{fmtNum(r.k, 2)}</span></span>
-        <span style={{ color: "var(--steel)", fontWeight: 700 }}><b>U<span style={{ fontSize: 9 }}>exp</span></b> <span className="mono">{fmtNum(r.uexp, 2)}</span></span>
+        <span style={{ color: "var(--steel)", fontWeight: 700 }}><b>U<span style={{ fontSize: 9 }}>exp</span></b> <span className="mono">{fmtNum(r.uexp, 3)}</span></span>
       </div>
     </div>
   );
 }
 
-// Bloco completo de uma grandeza (Temperatura ou Umidade): resolução do
-// instrumento/padrão + lista de pontos de calibração com o cálculo de
-// incerteza (GUM) ao vivo, portado das fórmulas da planilha PP-014.
-function IncertezaGrandeza({ label, icon: Icon, grandeza, onChange }) {
-  const setResolucao = (field, v) => onChange({ ...grandeza, [field]: v });
+// Bloco completo da calibração de massa: condições ambientais e dados
+// compartilhados (resolução da balança, excentricidade, densidades) + lista
+// de pontos de calibração, com o cálculo de incerteza (GUM/PP-004) ao vivo.
+function MassaCalibracao({ grandeza, onChange }) {
+  const set = (field, v) => onChange({ ...grandeza, [field]: v });
   const setPonto = (i, novoPonto) => {
     const pontos = grandeza.pontos.map((p, idx) => (idx === i ? novoPonto : p));
     onChange({ ...grandeza, pontos });
   };
-  const addPonto = () => onChange({ ...grandeza, pontos: [...grandeza.pontos, emptyPontoIncerteza()] });
+  const addPonto = () => onChange({ ...grandeza, pontos: [...grandeza.pontos, emptyPontoMassa()] });
   const removePonto = (i) => onChange({ ...grandeza, pontos: grandeza.pontos.filter((_, idx) => idx !== i) });
 
   return (
-    <div style={{ marginBottom: 26 }}>
+    <div style={{ marginBottom: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12, fontWeight: 600, fontSize: 13.5 }}>
-        <Icon size={15} color="var(--steel)" /> {label}
+        <Scale size={15} color="var(--steel)" /> Condições da calibração
       </div>
-      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
-        <div><label className="field-label">Resolução do instrumento</label><input value={grandeza.resolucaoInstrumento} onChange={(e) => setResolucao("resolucaoInstrumento", e.target.value)} placeholder="0,1" /></div>
-        <div><label className="field-label">Resolução do padrão</label><input value={grandeza.resolucaoPadrao} onChange={(e) => setResolucao("resolucaoPadrao", e.target.value)} placeholder="0,01" /></div>
+      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+        <div><label className="field-label">Resolução da balança (d)</label><input value={grandeza.resolucaoBalanca} onChange={(e) => set("resolucaoBalanca", e.target.value)} placeholder="0,01" /></div>
+        <div><label className="field-label">Maior excentricidade medida</label><input value={grandeza.excentricidade} onChange={(e) => set("excentricidade", e.target.value)} placeholder="0,02" /></div>
+      </div>
+      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 14 }}>
+        <div><label className="field-label">Temperatura do ar (°C)</label><input value={grandeza.temperaturaAr} onChange={(e) => set("temperaturaAr", e.target.value)} placeholder="20" /></div>
+        <div><label className="field-label">Umidade do ar (%UR)</label><input value={grandeza.umidadeAr} onChange={(e) => set("umidadeAr", e.target.value)} placeholder="50" /></div>
+        <div><label className="field-label">Pressão atmosférica (hPa)</label><input value={grandeza.pressaoAr} onChange={(e) => set("pressaoAr", e.target.value)} placeholder="1013" /></div>
+      </div>
+      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
+        <div><label className="field-label">Densidade do padrão (kg/m³)</label><input value={grandeza.densidadePadrao} onChange={(e) => set("densidadePadrao", e.target.value)} placeholder="8000" /></div>
+        <div><label className="field-label">Densidade peso de ajuste (kg/m³)</label><input value={grandeza.densidadeAjuste} onChange={(e) => set("densidadeAjuste", e.target.value)} placeholder="8000" /></div>
+        <div><label className="field-label">Incerteza densidade do ar</label><input value={grandeza.incertezaDensidadeAr} onChange={(e) => set("incertezaDensidadeAr", e.target.value)} placeholder="0,01" /></div>
       </div>
 
+      <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 12 }}>Pontos de calibração</div>
       {grandeza.pontos.map((ponto, i) => (
-        <PontoIncertezaCard
+        <PontoMassaCard
           key={i}
           ponto={ponto}
           index={i}
-          resolucaoInstrumento={grandeza.resolucaoInstrumento}
-          resolucaoPadrao={grandeza.resolucaoPadrao}
+          compartilhado={grandeza}
           onChange={(novoPonto) => setPonto(i, novoPonto)}
           onRemove={() => removePonto(i)}
           canRemove={grandeza.pontos.length > 1}
@@ -1316,7 +1363,7 @@ function emptyFormMRC() {
 
 function TypeToggle({ tipo, setTipo }) {
   const opts = [
-    { id: "calibracao", label: "Calibração", icon: Thermometer },
+    { id: "calibracao", label: "Calibração", icon: Scale },
     { id: "mrc", label: "Material de Referência (MRC)", icon: Beaker },
   ];
   return (
@@ -1411,35 +1458,55 @@ function NewCertificate({ certificados, onSave, setPage, config }) {
             <input value={form.cliente.endereco} onChange={(e) => setCliente("endereco", e.target.value)} placeholder="Rua, número - bairro - cidade - UF" />
           </Section>
 
-          <Section title="Instrumento">
+          <Section title="Instrumento (Balança)">
             <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-              <div><label className="field-label">Instrumento</label><input value={form.instrumento.nome} onChange={(e) => setInstrumento("nome", e.target.value)} placeholder="Termohigrômetro" /></div>
-              <div><label className="field-label">Código de identificação</label><input value={form.instrumento.codigoId} onChange={(e) => setInstrumento("codigoId", e.target.value)} placeholder="THG-12" /></div>
+              <div><label className="field-label">Instrumento</label><input value={form.instrumento.nome} onChange={(e) => setInstrumento("nome", e.target.value)} placeholder="Balança" /></div>
+              <div><label className="field-label">Código de identificação</label><input value={form.instrumento.codigoId} onChange={(e) => setInstrumento("codigoId", e.target.value)} placeholder="BAL-04" /></div>
               <div><label className="field-label">Fabricante</label><input value={form.instrumento.fabricante} onChange={(e) => setInstrumento("fabricante", e.target.value)} /></div>
               <div><label className="field-label">Modelo</label><input value={form.instrumento.modelo} onChange={(e) => setInstrumento("modelo", e.target.value)} /></div>
               <div><label className="field-label">Número de série</label><input value={form.instrumento.numeroSerie} onChange={(e) => setInstrumento("numeroSerie", e.target.value)} /></div>
-              <div><label className="field-label">Resolução</label><input value={form.instrumento.resolucao} onChange={(e) => setInstrumento("resolucao", e.target.value)} placeholder="0,1 °C / 1 % ur" /></div>
+              <div><label className="field-label">Tipo</label>
+                <select value={form.instrumento.tipo} onChange={(e) => setInstrumento("tipo", e.target.value)}>
+                  <option value="digital">Digital</option>
+                  <option value="analógica">Analógica</option>
+                </select>
+              </div>
+              <div><label className="field-label">Unidade</label>
+                <select value={form.instrumento.unidade} onChange={(e) => setInstrumento("unidade", e.target.value)}>
+                  <option value="g">g</option>
+                  <option value="kg">kg</option>
+                  <option value="mg">mg</option>
+                </select>
+              </div>
+              <div><label className="field-label">Carga mínima</label><input value={form.instrumento.cargaMinima} onChange={(e) => setInstrumento("cargaMinima", e.target.value)} placeholder="1 g" /></div>
             </div>
-            <label className="field-label">Faixa de calibração</label>
-            <input value={form.instrumento.faixa} onChange={(e) => setInstrumento("faixa", e.target.value)} placeholder="15 a 30 °C / 45 a 80 % ur" />
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 14 }}>
+              <div><label className="field-label">Faixa nominal</label><input value={form.instrumento.faixaNominal} onChange={(e) => setInstrumento("faixaNominal", e.target.value)} placeholder="0 a 6000 g" /></div>
+              <div><label className="field-label">Faixa de calibração</label><input value={form.instrumento.faixaCalibracao} onChange={(e) => setInstrumento("faixaCalibracao", e.target.value)} placeholder="0 a 6000 g" /></div>
+              <div><label className="field-label">Faixa de uso</label><input value={form.instrumento.faixaUso} onChange={(e) => setInstrumento("faixaUso", e.target.value)} placeholder="0 a 6000 g" /></div>
+            </div>
+            <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+              <div><label className="field-label">Valor de uma divisão (d1)</label><input value={form.instrumento.d1} onChange={(e) => setInstrumento("d1", e.target.value)} placeholder="0,01" /></div>
+              <div><label className="field-label">Valor de uma divisão (d2)</label><input value={form.instrumento.d2} onChange={(e) => setInstrumento("d2", e.target.value)} placeholder="N/A" /></div>
+              <div><label className="field-label">Divisão de verificação (e)</label><input value={form.instrumento.e} onChange={(e) => setInstrumento("e", e.target.value)} placeholder="0,01" /></div>
+            </div>
           </Section>
 
           <Section title="Padrões utilizados">
             {form.padroes.map((p, i) => (
               <div key={i} className="form-grid-padrao" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 10, marginBottom: 10, alignItems: "end" }}>
-                <div><label className="field-label">Descrição</label><input value={p.descricao} onChange={(e) => setPadrao(i, "descricao", e.target.value)} placeholder="Termohigrômetro Testo 650" /></div>
+                <div><label className="field-label">Descrição</label><input value={p.descricao} onChange={(e) => setPadrao(i, "descricao", e.target.value)} placeholder="Conjunto de massas padrão classe F1" /></div>
                 <div><label className="field-label">Código</label><input value={p.codigo} onChange={(e) => setPadrao(i, "codigo", e.target.value)} /></div>
                 <div><label className="field-label">Certificado</label><input value={p.certificado} onChange={(e) => setPadrao(i, "certificado", e.target.value)} /></div>
-                <div><label className="field-label">Validade</label><input value={p.validade} onChange={(e) => setPadrao(i, "validade", e.target.value)} placeholder="2026-11" /></div>
+                <div><label className="field-label">Validade</label><input value={p.validade} onChange={(e) => setPadrao(i, "validade", e.target.value)} placeholder="2027-03" /></div>
                 {form.padroes.length > 1 && <button onClick={() => removePadrao(i)} style={{ background: "none", border: "none" }}><Trash2 size={16} color="var(--alert)" /></button>}
               </div>
             ))}
             <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={addPadrao}><PlusCircle size={14} /> Adicionar padrão</button>
           </Section>
 
-          <Section title="Resultados">
-            <IncertezaGrandeza label="Temperatura (°C)" icon={Thermometer} grandeza={form.resultados.temperatura} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, temperatura: g } }))} />
-            <IncertezaGrandeza label="Umidade relativa (% ur)" icon={Droplets} grandeza={form.resultados.umidade} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, umidade: g } }))} />
+          <Section title="Resultados — Calibração de Massa (PP-004 / RBC)">
+            <MassaCalibracao grandeza={form.resultados.massa} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, massa: g } }))} />
           </Section>
 
           <Section title="Emissão">
@@ -1541,7 +1608,7 @@ function FieldRow({ label, labelEn, value }) {
 }
 
 function BrandMark({ config, size = 30, fontSize = 16 }) {
-  const nome = config?.empresaNome || "Traço";
+  const nome = config?.empresaNome || "Metrotech.ia";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
       {config?.logoDataUrl ? (
@@ -1648,7 +1715,7 @@ function Etiqueta({ cert, config, innerRef }) {
 
   const url = buildVerificationUrl(cert, config);
   const qr = useQrDataUrl(url, 240, "#111111");
-  const empresaNome = config?.empresaNome || "Traço";
+  const empresaNome = config?.empresaNome || "Metrotech.ia";
   const cor = config?.corDestaque || "#E8590C";
 
   return (
@@ -1696,7 +1763,7 @@ function Etiqueta({ cert, config, innerRef }) {
 // Marca d'água discreta e repetida — reforça a autenticidade visual do documento,
 // como nos certificados de referência (papel de segurança).
 function Watermark({ text, fontSize = 24, rowCount = 6 }) {
-  const label = (text || "TRAÇO").toUpperCase();
+  const label = (text || "METROTECH.IA").toUpperCase();
   const rows = Array.from({ length: rowCount }, (_, i) => i);
   const rowPct = 100 / (rowCount - 1.4);
   return (
@@ -1728,7 +1795,7 @@ function Watermark({ text, fontSize = 24, rowCount = 6 }) {
 // Rodapé em texto simples com endereço/telefone/e-mail — no padrão dos certificados
 // de referência (linha única, centralizada, sem elementos coloridos).
 function CertFooter({ config }) {
-  const empresaNome = config?.empresaNome || "Traço";
+  const empresaNome = config?.empresaNome || "Metrotech.ia";
   const parts = [config?.endereco, config?.telefone ? `Tel: ${config.telefone}` : null, config?.email].filter(Boolean);
   return (
     <div className="cert-footer-bar">
@@ -1762,7 +1829,7 @@ function VerificationPage({ payload }) {
           <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
           <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
         </svg>
-        <span className="disp" style={{ fontWeight: 700, fontSize: 19 }}>Traço</span>
+        <span className="disp" style={{ fontWeight: 700, fontSize: 19 }}>Metrotech.ia</span>
       </div>
 
       <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 8, padding: 32, maxWidth: 460, width: "100%" }}>
@@ -1821,7 +1888,7 @@ function CertificateView({ cert, setPage, config }) {
     const [y, m, d] = iso.split("-");
     return d ? `${d}/${m}/${y}` : iso;
   };
-  const empresaNome = config?.empresaNome || "Traço";
+  const empresaNome = config?.empresaNome || "Metrotech.ia";
   const page1Ref = useRef(null);
   const page2Ref = useRef(null);
   const labelRef = useRef(null);
@@ -1877,7 +1944,7 @@ function CertificateView({ cert, setPage, config }) {
         </div>
 
         <div style={{ fontSize: 11, textAlign: "center", color: "var(--graphite)", margin: "10px 0 20px", lineHeight: 1.5 }}>
-          Laboratório de calibração operando conforme a ABNT NBR ISO/IEC 17025{config?.acreditacaoNumero ? `, sob acreditação Nº ${config.acreditacaoNumero}` : ""}, com emissão rastreada pela plataforma Traço
+          Laboratório de calibração operando conforme a ABNT NBR ISO/IEC 17025{config?.acreditacaoNumero ? `, sob acreditação Nº ${config.acreditacaoNumero}` : ""}, com emissão rastreada pela plataforma Metrotech.ia
         </div>
 
         <div className="cert-section-title"><span>Identificação do Certificado</span><span className="en">Certificate Data</span></div>
@@ -1919,14 +1986,22 @@ function CertificateView({ cert, setPage, config }) {
             </tr>
             <tr>
               <td style={{ padding: "4px 0" }}><div className="cert-field-label">Fabricante <i>/ Manufacturer</i>:</div><div>{cert.instrumento?.fabricante || "—"}</div></td>
-              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Modelo / Tipo <i>/ Model</i>:</div><div>{cert.instrumento?.modelo || "Não consta"}</div></td>
+              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Modelo <i>/ Model</i>:</div><div>{cert.instrumento?.modelo || "Não consta"}</div></td>
             </tr>
             <tr>
               <td style={{ padding: "4px 0" }}><div className="cert-field-label">Número de Série <i>/ Serial Number</i>:</div><div className="mono">{cert.instrumento?.numeroSerie || "Não consta"}</div></td>
-              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Resolução <i>/ Resolution</i>:</div><div>{cert.instrumento?.resolucao || "—"}</div></td>
+              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Tipo <i>/ Type</i>:</div><div>{cert.instrumento?.tipo || "—"}</div></td>
             </tr>
             <tr>
-              <td colSpan={2} style={{ padding: "4px 0" }}><div className="cert-field-label">Faixa de Calibração <i>/ Measuring Range</i>:</div><div>{cert.instrumento?.faixa || "—"}</div></td>
+              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Faixa Nominal <i>/ Nominal Range</i>:</div><div>{cert.instrumento?.faixaNominal || "—"}</div></td>
+              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Faixa de Calibração <i>/ Calibration Range</i>:</div><div>{cert.instrumento?.faixaCalibracao || "—"}</div></td>
+            </tr>
+            <tr>
+              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Valor de uma divisão (d) <i>/ Scale Interval</i>:</div><div>{cert.instrumento?.d1 || "—"}{cert.instrumento?.d2 && cert.instrumento.d2 !== "N/A" ? ` / ${cert.instrumento.d2}` : ""} {cert.instrumento?.unidade}</div></td>
+              <td style={{ padding: "4px 0" }}><div className="cert-field-label">Divisão de Verificação (e):</div><div>{cert.instrumento?.e || "—"} {cert.instrumento?.unidade}</div></td>
+            </tr>
+            <tr>
+              <td colSpan={2} style={{ padding: "4px 0" }}><div className="cert-field-label">Carga Mínima <i>/ Minimum Capacity</i>:</div><div>{cert.instrumento?.cargaMinima || "—"}</div></td>
             </tr>
           </tbody>
         </table>
@@ -1991,37 +2066,38 @@ function CertificateView({ cert, setPage, config }) {
         </div>
 
         <div className="cert-section-title"><span>Folha de Resultado</span><span className="en">Results Sheet</span></div>
-        <p className="cert-note">V.C. — valor convencionado do padrão (média das leituras + correção do certificado do padrão). V.M.I. — valor médio indicado pelo instrumento em calibração. Erro de Medição = V.M.I. − V.C. Incerteza calculada segundo o GUM (ISO/IEC Guia 98-3), com graus de liberdade efetivos por Welch-Satterthwaite e fator k de Student a 95,45% de confiança.</p>
+        <p className="cert-note">V.C. — valor convencional do padrão (massa nominal + correção do certificado + correção por empuxo do ar + deriva). V.M.I. — valor médio indicado pela balança. Correção = V.C. − V.M.I. Incerteza calculada segundo o GUM (ISO/IEC Guia 98-3) e o procedimento PP-004/RBC de calibração de balanças, com graus de liberdade efetivos por Welch-Satterthwaite e fator k de Student a 95,45% de confiança.</p>
 
-        {["temperatura", "umidade"].map((g) => {
-          const grandeza = cert.resultados?.[g];
-          if (!grandeza?.pontos?.length) return null;
-          return (
-            <div key={g} style={{ margin: "18px 0" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
-                {g === "temperatura" ? <Thermometer size={13} /> : <Droplets size={13} />} {g === "temperatura" ? "Temperatura" : "Umidade"}
-              </div>
-              <div className="table-scroll">
-              <table className="data-table">
-                <thead><tr><th>V.C.</th><th>V.M.I.</th><th>Erro</th><th>Incerteza Expandida</th><th>k</th><th>ν<span style={{ fontSize: 8 }}>eff</span></th></tr></thead>
-                <tbody>{grandeza.pontos.map((ponto, i) => {
-                  const r = computeIncertezaPonto(ponto, grandeza.resolucaoInstrumento, grandeza.resolucaoPadrao);
-                  return (
-                    <tr key={i}>
-                      <td className="mono">{fmtNum(r.valorConvencionado, 2)}</td>
-                      <td className="mono">{fmtNum(r.mediaInstrumento, 2)}</td>
-                      <td className="mono">{fmtNum(r.erro, 2)}</td>
-                      <td className="mono">{fmtNum(r.uexp, 2)}</td>
-                      <td className="mono">{r.k.toFixed(2).replace(".", ",")}</td>
-                      <td className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</td>
-                    </tr>
-                  );
-                })}</tbody>
-              </table>
-              </div>
+        {cert.resultados?.massa?.pontos?.length > 0 && (
+          <div style={{ margin: "18px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
+              <Scale size={13} /> Massa
             </div>
-          );
-        })}
+            <div className="table-scroll">
+            <table className="data-table">
+              <thead><tr><th>Nominal</th><th>V.C.</th><th>V.M.I.</th><th>Correção</th><th>Incerteza Expandida</th><th>k</th><th>ν<span style={{ fontSize: 8 }}>eff</span></th></tr></thead>
+              <tbody>{cert.resultados.massa.pontos.map((ponto, i) => {
+                const r = computeMassaPonto(ponto, cert.resultados.massa);
+                return (
+                  <tr key={i}>
+                    <td className="mono">{ponto.nominalPadrao || "—"}</td>
+                    <td className="mono">{fmtNum(r.valorConvencionado, 3)}</td>
+                    <td className="mono">{fmtNum(r.mediaIndicacao, 3)}</td>
+                    <td className="mono">{fmtNum(r.correcao, 3)}</td>
+                    <td className="mono">{fmtNum(r.uexp, 3)}</td>
+                    <td className="mono">{r.k.toFixed(2).replace(".", ",")}</td>
+                    <td className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+            </div>
+            <p className="cert-note" style={{ marginTop: 8 }}>
+              Condições ambientais: {cert.resultados.massa.temperaturaAr}°C · {cert.resultados.massa.umidadeAr}%UR · {cert.resultados.massa.pressaoAr} hPa.
+              Maior excentricidade: {cert.resultados.massa.excentricidade} {cert.instrumento?.unidade}.
+            </p>
+          </div>
+        )}
 
         <div style={{ height: 40 }} />
         </div>
@@ -2057,7 +2133,7 @@ function MRCCertificateView({ cert, setPage, config }) {
     const idx = parseInt(m, 10) - 1;
     return meses[idx] ? `${meses[idx]}-${y.slice(-2)}` : iso;
   };
-  const empresaNome = config?.empresaNome || "Traço";
+  const empresaNome = config?.empresaNome || "Metrotech.ia";
   const vc = cert.valorCertificado || {};
   const page1Ref = useRef(null);
   const page2Ref = useRef(null);
@@ -2235,7 +2311,7 @@ function SettingsPage({ config, onSave }) {
 
       <Section title="Identidade do laboratório">
         <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
-          <div><label className="field-label">Razão social</label><input value={form.empresaNome} onChange={(e) => set("empresaNome", e.target.value)} placeholder="Ex: Traço Laboratório de Calibração Ltda" /></div>
+          <div><label className="field-label">Razão social</label><input value={form.empresaNome} onChange={(e) => set("empresaNome", e.target.value)} placeholder="Ex: Metrotech.ia Laboratório de Calibração Ltda" /></div>
           <div><label className="field-label">Nº de acreditação</label><input value={form.acreditacaoNumero} onChange={(e) => set("acreditacaoNumero", e.target.value)} placeholder="PMR-003" /></div>
         </div>
         <label className="field-label">Endereço</label>
@@ -2259,7 +2335,7 @@ function SettingsPage({ config, onSave }) {
             {form.logoDataUrl && (
               <button className="btn-ghost" style={{ marginLeft: 10 }} onClick={() => set("logoDataUrl", null)}>Remover</button>
             )}
-            <p style={{ fontSize: 12, color: "var(--graphite)", marginTop: 8, maxWidth: 320 }}>Aparece no cabeçalho de todos os certificados. Se não enviar uma logo, o símbolo padrão do Traço é usado.</p>
+            <p style={{ fontSize: 12, color: "var(--graphite)", marginTop: 8, maxWidth: 320 }}>Aparece no cabeçalho de todos os certificados. Se não enviar uma logo, o símbolo padrão do Metrotech.ia é usado.</p>
           </div>
         </div>
       </Section>
@@ -2372,7 +2448,7 @@ function AppShell({ onExit }) {
           <button onClick={() => setSidebarOpen(true)} style={{ background: "none", border: "none" }} aria-label="Abrir menu">
             <Menu size={22} color="var(--ink)" />
           </button>
-          <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>Traço</span>
+          <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>Metrotech.ia</span>
           <div style={{ width: 22 }} />
         </div>
         <main className="app-main" style={{ flex: 1, padding: "32px 36px", background: "var(--paper)" }}>
