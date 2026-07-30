@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import QRCode from "qrcode";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import { supabase } from "./supabaseClient";
 import {
   ShieldCheck, FileText, Gauge, Boxes, Users, Settings as SettingsIcon, PlusCircle, Search,
   Printer, ArrowRight, Layers, Database, Server, Cloud, Lock, ChevronRight,
@@ -263,46 +264,44 @@ const GlobalStyle = () => (
 );
 
 /* ------------------------------------------------------------------ */
-/* Storage helpers                                                     */
+/* Banco de dados (Supabase) — certificados e perfil da empresa por     */
+/* usuário autenticado. Substitui o armazenamento local usado antes.    */
 /* ------------------------------------------------------------------ */
-const STORAGE_KEY = "traco:certificados";
 
-// Funciona dentro do Claude (window.storage) e também como site standalone
-// (Vercel/Netlify), caso em que cai automaticamente para localStorage.
-const storageAdapter = {
-  async get(key) {
-    if (typeof window !== "undefined" && window.storage) {
-      return window.storage.get(key, false);
-    }
-    const v = localStorage.getItem(key);
-    return v ? { value: v } : null;
-  },
-  async set(key, value) {
-    if (typeof window !== "undefined" && window.storage) {
-      return window.storage.set(key, value, false);
-    }
-    localStorage.setItem(key, value);
-    return { value };
-  },
-};
-
-async function loadCertificados() {
+async function loadCertificados(userId) {
+  if (!userId) return [];
   try {
-    const res = await storageAdapter.get(STORAGE_KEY);
-    return res ? JSON.parse(res.value) : seedData();
-  } catch {
-    return seedData();
-  }
-}
-async function saveCertificados(list) {
-  try {
-    await storageAdapter.set(STORAGE_KEY, JSON.stringify(list));
+    const { data, error } = await supabase
+      .from("certificados")
+      .select("*")
+      .eq("user_id", userId)
+      .order("criado_em", { ascending: false });
+    if (error) throw error;
+    return (data || []).map((row) => ({ ...row.dados, id: row.id, tipo: row.tipo, numero: row.numero, status: row.status }));
   } catch (e) {
-    console.error("Falha ao salvar", e);
+    console.error("Falha ao carregar certificados", e);
+    return [];
   }
 }
 
-const CONFIG_KEY = "traco:config";
+async function salvarCertificado(cert, userId) {
+  const { id, tipo, numero, status, ...dados } = cert;
+  const row = { user_id: userId, tipo, numero, status, dados };
+  try {
+    if (id) {
+      const { error } = await supabase.from("certificados").update(row).eq("id", id).eq("user_id", userId);
+      if (error) throw error;
+      return { ...cert };
+    } else {
+      const { data, error } = await supabase.from("certificados").insert(row).select().single();
+      if (error) throw error;
+      return { ...cert, id: data.id };
+    }
+  } catch (e) {
+    console.error("Falha ao salvar certificado", e);
+    return cert;
+  }
+}
 
 function defaultConfig() {
   return {
@@ -319,17 +318,52 @@ function defaultConfig() {
     corDestaque: "#E8590C",
   };
 }
-async function loadConfig() {
+
+async function loadConfig(userId) {
+  if (!userId) return defaultConfig();
   try {
-    const res = await storageAdapter.get(CONFIG_KEY);
-    return res ? { ...defaultConfig(), ...JSON.parse(res.value) } : defaultConfig();
-  } catch {
+    const { data, error } = await supabase.from("perfis").select("*").eq("id", userId).maybeSingle();
+    if (error) throw error;
+    if (!data) return defaultConfig();
+    return {
+      empresaNome: data.empresa_nome || "",
+      logoDataUrl: data.logo_url || null,
+      endereco: data.endereco || "",
+      telefone: data.telefone || "",
+      email: data.email || "",
+      acreditacaoNumero: data.acreditacao_numero || "",
+      acreditacaoData: data.acreditacao_data || "",
+      responsavelNome: data.responsavel_nome || "",
+      responsavelCargo: data.responsavel_cargo || "Responsável Técnico",
+      assinaturaDataUrl: data.assinatura_url || null,
+      corDestaque: data.cor_destaque || "#E8590C",
+    };
+  } catch (e) {
+    console.error("Falha ao carregar configuração", e);
     return defaultConfig();
   }
 }
-async function saveConfig(cfg) {
+
+async function saveConfig(cfg, userId) {
+  if (!userId) return;
   try {
-    await storageAdapter.set(CONFIG_KEY, JSON.stringify(cfg));
+    const row = {
+      id: userId,
+      empresa_nome: cfg.empresaNome,
+      logo_url: cfg.logoDataUrl,
+      endereco: cfg.endereco,
+      telefone: cfg.telefone,
+      email: cfg.email,
+      acreditacao_numero: cfg.acreditacaoNumero,
+      acreditacao_data: cfg.acreditacaoData || null,
+      responsavel_nome: cfg.responsavelNome,
+      responsavel_cargo: cfg.responsavelCargo,
+      assinatura_url: cfg.assinaturaDataUrl,
+      cor_destaque: cfg.corDestaque,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from("perfis").upsert(row);
+    if (error) throw error;
   } catch (e) {
     console.error("Falha ao salvar configuração", e);
   }
@@ -622,87 +656,62 @@ async function downloadEtiquetaSheetPdf(labelElement, filename) {
   pdf.save(filename);
 }
 
-function seedData() {
-  return [
-    {
-      id: "cert-seed-1",
-      tipo: "calibracao",
-      numero: "MTI-0001/26",
-      os: "OS-0044/26",
-      dataCalibracao: "2026-06-18",
-      proximaCalibracao: "2027-06-18",
-      responsavel: "Eng. Marina Alcântara",
-      status: "emitido",
-      cliente: {
-        razaoSocial: "Metalúrgica Nordeste Ltda",
-        endereco: "Av. Santos Dumont, 1200 - Aldeota - Fortaleza - CE",
-        codigo: "CL-1029",
-      },
-      instrumento: {
-        nome: "Balança",
-        fabricante: "Toledo do Brasil",
-        modelo: "Não consta",
-        numeroSerie: "Não consta",
-        codigoId: "BAL-04",
-        tipo: "digital",
-        unidade: "g",
-        faixaNominal: "0 a 6000 g",
-        faixaCalibracao: "0 a 6000 g",
-        faixaUso: "0 a 6000 g",
-        d1: "0,01",
-        d2: "N/A",
-        e: "0,01",
-        cargaMinima: "1 g",
-      },
-      padroes: [
-        { descricao: "Conjunto de massas padrão classe F1", codigo: "PM-004", certificado: "RBC-8871234", validade: "2027-03" },
-      ],
-      resultados: {
-        massa: {
-          resolucaoBalanca: "0,01",
-          excentricidade: "0,02",
-          temperaturaAr: "23",
-          umidadeAr: "55",
-          pressaoAr: "1013",
-          densidadePadrao: "8000",
-          densidadeAjuste: "8000",
-          incertezaDensidadeAr: "0,01",
-          pontos: [
-            { leiturasIndicacao: ["100,01", "100,00", "100,01", "100,00", "100,01"], nominalPadrao: "100", correcaoPadrao: "0,002", incertezaPadrao: "0,005", kPadrao: "2", derivaPadrao: "0,001" },
-            { leiturasIndicacao: ["1000,02", "1000,01", "1000,02", "1000,01", "1000,02"], nominalPadrao: "1000", correcaoPadrao: "0,010", incertezaPadrao: "0,020", kPadrao: "2", derivaPadrao: "0,005" },
-            { leiturasIndicacao: ["5000,05", "5000,04", "5000,06", "5000,05", "5000,04"], nominalPadrao: "5000", correcaoPadrao: "0,030", incertezaPadrao: "0,060", kPadrao: "2", derivaPadrao: "0,010" },
-          ],
-        },
+// Certificado de exemplo — não é gravado no banco de dados, serve apenas
+// como referência de preenchimento pra quem está usando o sistema pela
+// primeira vez ("Ver certificado de exemplo").
+function exemploCertificado() {
+  return {
+    id: "exemplo",
+    exemplo: true,
+    tipo: "calibracao",
+    numero: "MTI-0001/26",
+    os: "OS-0044/26",
+    dataCalibracao: "2026-06-18",
+    proximaCalibracao: "2027-06-18",
+    responsavel: "Eng. Marina Alcântara",
+    status: "emitido",
+    cliente: {
+      razaoSocial: "Metalúrgica Nordeste Ltda",
+      endereco: "Av. Santos Dumont, 1200 - Aldeota - Fortaleza - CE",
+      codigo: "CL-1029",
+    },
+    instrumento: {
+      nome: "Balança",
+      fabricante: "Toledo do Brasil",
+      modelo: "Não consta",
+      numeroSerie: "Não consta",
+      codigoId: "BAL-04",
+      tipo: "digital",
+      unidade: "g",
+      faixaNominal: "0 a 6000 g",
+      faixaCalibracao: "0 a 6000 g",
+      faixaUso: "0 a 6000 g",
+      d1: "0,01",
+      d2: "N/A",
+      e: "0,01",
+      cargaMinima: "1 g",
+    },
+    padroes: [
+      { descricao: "Conjunto de massas padrão classe F1", codigo: "PM-004", certificado: "RBC-8871234", validade: "2027-03" },
+    ],
+    resultados: {
+      massa: {
+        resolucaoBalanca: "0,01",
+        excentricidade: "0,02",
+        temperaturaAr: "23",
+        umidadeAr: "55",
+        pressaoAr: "1013",
+        densidadePadrao: "8000",
+        densidadeAjuste: "8000",
+        incertezaDensidadeAr: "0,01",
+        pontos: [
+          { leiturasIndicacao: ["100,01", "100,00", "100,01", "100,00", "100,01"], nominalPadrao: "100", correcaoPadrao: "0,002", incertezaPadrao: "0,005", kPadrao: "2", derivaPadrao: "0,001" },
+          { leiturasIndicacao: ["1000,02", "1000,01", "1000,02", "1000,01", "1000,02"], nominalPadrao: "1000", correcaoPadrao: "0,010", incertezaPadrao: "0,020", kPadrao: "2", derivaPadrao: "0,005" },
+          { leiturasIndicacao: ["5000,05", "5000,04", "5000,06", "5000,05", "5000,04"], nominalPadrao: "5000", correcaoPadrao: "0,030", incertezaPadrao: "0,060", kPadrao: "2", derivaPadrao: "0,010" },
+        ],
       },
     },
-    {
-      id: "cert-seed-2",
-      tipo: "mrc",
-      numero: "MR-001/26",
-      status: "emitido",
-      mrcNome: "Solução Padrão de Condutividade 1,413 mS/cm",
-      codigo: "TRCOND1413",
-      lote: "0626-TRCOND1413-0091",
-      descricao: "O Material de Referência Certificado consiste em uma solução eletrolítica preparada a partir de sal de cloreto de potássio e água purificada.",
-      preparacao: "O material foi preparado gravimetricamente e envasado em frasco de polietileno de alta densidade.",
-      metodologia: "O valor certificado foi obtido por caracterização com condutivímetro calibrado, conforme estudos de homogeneidade e estabilidade baseados na ABNT ISO 17034.",
-      rastreabilidade: "A rastreabilidade foi assegurada por medição com célula de condutividade calibrada por padrão rastreado ao Sistema Internacional de Unidades (SI).",
-      finalidade: "Uso para calibração e verificação de medidores de condutividade eletrolítica.",
-      armazenamento: "Armazenar em ambiente protegido da luz, entre 15 e 30 °C. Após o uso, fechar bem o frasco e manter refrigerado.",
-      valorCertificado: { grandeza: "Condutividade eletrolítica", valor: "1,413", unidade: "mS/cm", incerteza: "0,01", temperaturaRef: "25,0", incertezaTemp: "0,1" },
-      dataCertificacao: "2026-06-10",
-      validadeLote: "2027-06",
-      responsavel: "Eng. Marina Alcântara",
-      cargo: "Signatária Autorizada",
-      informacoesAdicionais: [
-        "A integridade deste material é assegurada até a abertura da embalagem, se esta estiver íntegra.",
-        "Este MRC deve ser manuseado conforme as instruções deste certificado e a ficha de segurança correspondente.",
-        "Este certificado perde a validade caso o material seja danificado, contaminado ou alterado.",
-        "Este certificado é válido apenas para o lote produzido, não sendo extensivo a outros lotes.",
-        "A reprodução deste certificado só pode ser feita de forma integral, sem alterações.",
-      ],
-    },
-  ];
+  };
 }
 
 function nextNumero(list) {
@@ -747,12 +756,11 @@ function Nav({ onEnterApp }) {
         <nav className="hide-mobile" style={{ display: "flex", gap: 30, fontSize: 14.5, fontWeight: 500 }}>
           <a href="#recursos">Recursos</a>
           <a href="#rastreabilidade">Rastreabilidade</a>
-          <a href="#precos">Planos</a>
           <a href="#stack">Tecnologia</a>
         </nav>
         <div className="hide-mobile" style={{ display: "flex", gap: 12 }}>
-          <button className="btn-ghost" onClick={onEnterApp}>Entrar</button>
-          <button className="btn-primary" onClick={onEnterApp}>Ver demonstração <ArrowRight size={16} /></button>
+          <button className="btn-ghost" onClick={() => onEnterApp("login")}>Entrar</button>
+          <button className="btn-primary" onClick={() => onEnterApp("signup")}>Criar conta <ArrowRight size={16} /></button>
         </div>
         <button className="mobile-menu-btn" onClick={() => setOpen((o) => !o)} aria-label="Abrir menu">
           {open ? <X size={22} /> : <Menu size={22} />}
@@ -762,11 +770,10 @@ function Nav({ onEnterApp }) {
         <div className="mobile-menu-panel">
           <a href="#recursos" onClick={() => setOpen(false)}>Recursos</a>
           <a href="#rastreabilidade" onClick={() => setOpen(false)}>Rastreabilidade</a>
-          <a href="#precos" onClick={() => setOpen(false)}>Planos</a>
           <a href="#stack" onClick={() => setOpen(false)}>Tecnologia</a>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
-            <button className="btn-ghost" style={{ justifyContent: "center" }} onClick={onEnterApp}>Entrar</button>
-            <button className="btn-primary" style={{ justifyContent: "center" }} onClick={onEnterApp}>Ver demonstração <ArrowRight size={16} /></button>
+            <button className="btn-ghost" style={{ justifyContent: "center" }} onClick={() => onEnterApp("login")}>Entrar</button>
+            <button className="btn-primary" style={{ justifyContent: "center" }} onClick={() => onEnterApp("signup")}>Criar conta <ArrowRight size={16} /></button>
           </div>
         </div>
       )}
@@ -794,8 +801,8 @@ function Hero({ onEnterApp }) {
             Metrotech.ia automatiza a emissão de certificados de conformidade e calibração conforme normas do Inmetro — do cadastro do instrumento até o PDF assinado. Sem limite de certificados, de usuários, ou de crescimento.
           </p>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-            <button className="btn-primary" onClick={onEnterApp}>Acessar demonstração <ArrowRight size={17} /></button>
-            <button className="btn-ghost" onClick={() => document.getElementById("precos")?.scrollIntoView({ behavior: "smooth" })}>Ver planos</button>
+            <button className="btn-primary" onClick={() => onEnterApp("signup")}>Criar conta grátis <ArrowRight size={17} /></button>
+            <button className="btn-ghost" onClick={() => document.getElementById("recursos")?.scrollIntoView({ behavior: "smooth" })}>Ver recursos</button>
           </div>
         </div>
 
@@ -899,82 +906,13 @@ function TraceabilityChain() {
   );
 }
 
-function Pricing({ onEnterApp }) {
-  const tiers = [
-    {
-      name: "Pequeno laboratório",
-      desc: "Para quem está começando a formalizar a emissão",
-      price: "R$ 249",
-      period: "/mês",
-      features: ["Certificados ilimitados", "1 responsável técnico", "1 unidade", "Templates padrão", "Suporte por e-mail"],
-    },
-    {
-      name: "Laboratório em crescimento",
-      desc: "Para operações com mais de uma equipe técnica",
-      price: "R$ 890",
-      period: "/mês",
-      features: ["Certificados ilimitados", "Até 10 responsáveis técnicos", "Até 5 unidades", "Templates personalizados", "Portal do cliente", "Suporte prioritário"],
-      highlight: true,
-    },
-    {
-      name: "Grande operação",
-      desc: "Para grupos com múltiplas filiais e alto volume",
-      price: "Sob consulta",
-      period: "",
-      features: ["Certificados e usuários ilimitados", "Unidades e filiais ilimitadas", "Assinatura ICP-Brasil", "SLA dedicado", "Integração via API"],
-    },
-  ];
-  return (
-    <section id="precos" style={{ maxWidth: 1180, margin: "0 auto", padding: "84px 24px" }}>
-      <div style={{ maxWidth: 560, marginBottom: 48 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--orange)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Planos</div>
-        <h2 className="disp" style={{ fontSize: "clamp(26px,3vw,36px)", fontWeight: 700, margin: "0 0 10px" }}>O volume de certificados nunca é o limite</h2>
-        <p style={{ color: "var(--graphite)", fontSize: 15 }}>Os planos escalam por usuários, unidades e suporte — nunca por quantos certificados seu laboratório emite.</p>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 20 }}>
-        {tiers.map((t, i) => (
-          <div key={i} style={{
-            background: t.highlight ? "var(--navy)" : "white",
-            color: t.highlight ? "white" : "var(--ink)",
-            border: t.highlight ? "none" : "1px solid var(--line)",
-            borderRadius: 6, padding: 30,
-            display: "flex", flexDirection: "column",
-          }}>
-            <h3 className="disp" style={{ fontSize: 18, fontWeight: 600, margin: "0 0 6px" }}>{t.name}</h3>
-            <p style={{ fontSize: 13.5, color: t.highlight ? "rgba(255,255,255,0.6)" : "var(--graphite)", marginBottom: 20, minHeight: 36 }}>{t.desc}</p>
-            <div style={{ marginBottom: 22 }}>
-              <span className="mono" style={{ fontSize: 30, fontWeight: 600 }}>{t.price}</span>
-              <span style={{ fontSize: 13.5, color: t.highlight ? "rgba(255,255,255,0.6)" : "var(--graphite)" }}>{t.period}</span>
-            </div>
-            <ul style={{ listStyle: "none", padding: 0, margin: "0 0 26px", flex: 1 }}>
-              {t.features.map((f, j) => (
-                <li key={j} style={{ display: "flex", gap: 9, alignItems: "flex-start", fontSize: 13.5, marginBottom: 11 }}>
-                  <Check size={15} style={{ marginTop: 2, flexShrink: 0, color: "var(--orange)" }} /> {f}
-                </li>
-              ))}
-            </ul>
-            <button
-              onClick={onEnterApp}
-              className={t.highlight ? "btn-primary" : "btn-ghost"}
-              style={t.highlight ? {} : { borderColor: "var(--line)" }}
-            >
-              Começar
-            </button>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function StackSection() {
   const layers = [
-    { label: "Frontend", value: "React + dashboard multi-tenant" },
-    { label: "API", value: "FastAPI (Python) — cálculo de incerteza nativo" },
-    { label: "Fila assíncrona", value: "Celery + Redis — emissão em lote" },
-    { label: "Banco de dados", value: "PostgreSQL — isolado por tenant" },
-    { label: "Arquivos", value: "S3-compatível — PDFs e anexos" },
-    { label: "Infraestrutura", value: "Docker — escala horizontal sem retrabalho" },
+    { label: "Frontend", value: "React + Vite" },
+    { label: "Autenticação", value: "Supabase Auth — login por conta, isolado por laboratório" },
+    { label: "Banco de dados", value: "PostgreSQL (Supabase), com isolamento de dados por usuário" },
+    { label: "Documentos", value: "Geração de PDF, QR Code de verificação e etiqueta física" },
+    { label: "Hospedagem", value: "Vercel — deploy contínuo" },
   ];
   return (
     <section id="stack" className="grid-paper" style={{ borderTop: "1px solid var(--line)", padding: "84px 24px" }}>
@@ -1013,9 +951,125 @@ function LandingPage({ onEnterApp }) {
       <LogosBar />
       <Features />
       <TraceabilityChain />
-      <Pricing onEnterApp={onEnterApp} />
       <StackSection />
       <Footer />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Autenticação — login e cadastro de clientes (Supabase Auth)          */
+/* ------------------------------------------------------------------ */
+
+function AuthPage({ mode: initialMode, onAuthenticated, onBack }) {
+  const [mode, setMode] = useState(initialMode || "login");
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [confirmarSenha, setConfirmarSenha] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState("");
+  const [avisoCadastro, setAvisoCadastro] = useState("");
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setErro("");
+    setAvisoCadastro("");
+
+    if (mode === "signup" && senha !== confirmarSenha) {
+      setErro("As senhas não coincidem.");
+      return;
+    }
+    if (senha.length < 6) {
+      setErro("A senha precisa ter pelo menos 6 caracteres.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      if (mode === "login") {
+        const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
+        if (error) throw error;
+        onAuthenticated();
+      } else {
+        const { data, error } = await supabase.auth.signUp({ email, password: senha });
+        if (error) throw error;
+        if (data.session) {
+          onAuthenticated();
+        } else {
+          setAvisoCadastro("Conta criada! Confira seu e-mail para confirmar o cadastro antes de entrar.");
+        }
+      }
+    } catch (err) {
+      setErro(err.message === "Invalid login credentials" ? "E-mail ou senha incorretos." : (err.message || "Não foi possível concluir. Tente novamente."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="grid-paper" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ width: "100%", maxWidth: 400 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: "var(--graphite)", marginBottom: 22 }}>
+          <ArrowLeft size={15} /> Voltar ao site
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 26 }}>
+          <svg width="26" height="26" viewBox="0 0 26 26">
+            <circle cx="13" cy="13" r="11.5" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
+            <line x1="13" y1="2.2" x2="13" y2="6.2" stroke="var(--orange)" strokeWidth="1.8" />
+            <line x1="13" y1="19.8" x2="13" y2="23.8" stroke="var(--ink)" strokeWidth="1.6" />
+            <line x1="2.2" y1="13" x2="6.2" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+            <line x1="19.8" y1="13" x2="23.8" y2="13" stroke="var(--ink)" strokeWidth="1.6" />
+          </svg>
+          <span className="disp" style={{ fontWeight: 700, fontSize: 19 }}>Metrotech.ia</span>
+        </div>
+
+        <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 8, padding: 30 }}>
+          <div style={{ display: "flex", gap: 4, marginBottom: 22, background: "var(--paper)", borderRadius: 6, padding: 4 }}>
+            <button
+              onClick={() => { setMode("login"); setErro(""); setAvisoCadastro(""); }}
+              style={{ flex: 1, padding: "8px 0", borderRadius: 4, border: "none", fontWeight: 600, fontSize: 13.5, background: mode === "login" ? "white" : "transparent", color: mode === "login" ? "var(--ink)" : "var(--graphite)", boxShadow: mode === "login" ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}
+            >
+              Entrar
+            </button>
+            <button
+              onClick={() => { setMode("signup"); setErro(""); setAvisoCadastro(""); }}
+              style={{ flex: 1, padding: "8px 0", borderRadius: 4, border: "none", fontWeight: 600, fontSize: 13.5, background: mode === "signup" ? "white" : "transparent", color: mode === "signup" ? "var(--ink)" : "var(--graphite)", boxShadow: mode === "signup" ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}
+            >
+              Criar conta
+            </button>
+          </div>
+
+          <h2 className="disp" style={{ fontSize: 19, fontWeight: 700, margin: "0 0 4px" }}>
+            {mode === "login" ? "Acessar minha conta" : "Criar conta grátis"}
+          </h2>
+          <p style={{ fontSize: 13, color: "var(--graphite)", marginBottom: 20 }}>
+            {mode === "login" ? "Entre com o e-mail e senha do seu laboratório." : "Leva menos de um minuto."}
+          </p>
+
+          <form onSubmit={handleSubmit}>
+            <label className="field-label">E-mail</label>
+            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="voce@laboratorio.com.br" style={{ marginBottom: 14 }} />
+
+            <label className="field-label">Senha</label>
+            <input type="password" required value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="••••••••" style={{ marginBottom: mode === "signup" ? 14 : 20 }} />
+
+            {mode === "signup" && (
+              <>
+                <label className="field-label">Confirmar senha</label>
+                <input type="password" required value={confirmarSenha} onChange={(e) => setConfirmarSenha(e.target.value)} placeholder="••••••••" style={{ marginBottom: 20 }} />
+              </>
+            )}
+
+            {erro && <p style={{ fontSize: 12.5, color: "var(--alert)", marginBottom: 14 }}>{erro}</p>}
+            {avisoCadastro && <p style={{ fontSize: 12.5, color: "var(--seal-green)", marginBottom: 14 }}>{avisoCadastro}</p>}
+
+            <button type="submit" className="btn-primary" disabled={loading} style={{ width: "100%", justifyContent: "center", ...(loading ? { opacity: 0.6 } : {}) }}>
+              {loading ? "Aguarde..." : mode === "login" ? "Entrar" : "Criar conta"}
+            </button>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1024,7 +1078,7 @@ function LandingPage({ onEnterApp }) {
 /* App shell (demo)                                                     */
 /* ------------------------------------------------------------------ */
 
-function Sidebar({ page, setPage, onExit, open }) {
+function Sidebar({ page, setPage, onExit, open, empresaNome, userEmail }) {
   const items = [
     { id: "dashboard", label: "Painel", icon: BarChart3 },
     { id: "certificados", label: "Certificados", icon: FileText },
@@ -1045,8 +1099,8 @@ function Sidebar({ page, setPage, onExit, open }) {
         </svg>
         <span className="disp" style={{ fontWeight: 700, fontSize: 17 }}>Metrotech.ia</span>
       </div>
-      <div style={{ padding: "16px 20px", fontSize: 11.5, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-        Metalúrgica Nordeste Ltda
+      <div style={{ padding: "16px 20px", fontSize: 11.5, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.05em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {empresaNome || userEmail || "Minha conta"}
       </div>
       <nav style={{ flex: 1, padding: "0 12px" }}>
         {items.map((it) => (
@@ -1068,7 +1122,7 @@ function Sidebar({ page, setPage, onExit, open }) {
       </nav>
       <div style={{ padding: 16 }}>
         <button className="btn-ghost" style={{ width: "100%", justifyContent: "center", color: "white", borderColor: "rgba(255,255,255,0.25)" }} onClick={onExit}>
-          <ArrowLeft size={15} /> Sair da demo
+          <ArrowLeft size={15} /> Sair
         </button>
       </div>
     </aside>
@@ -1084,15 +1138,16 @@ function StatusPill({ status }) {
   return <span className="status-pill" style={{ background: s.bg, color: s.color }}><Check size={12} /> {s.label}</span>;
 }
 
-function Dashboard({ certificados, setPage }) {
+function Dashboard({ certificados, setPage, onVerExemplo }) {
   const total = certificados.length;
   const dataDe = (c) => c.tipo === "mrc" ? c.dataCertificacao : c.dataCalibracao;
-  const mesAtual = certificados.filter((c) => (dataDe(c) || "").startsWith("2026-06") || (dataDe(c) || "").startsWith("2026-07")).length;
+  const mesAtualPrefix = new Date().toISOString().slice(0, 7);
+  const mesAtual = certificados.filter((c) => (dataDe(c) || "").startsWith(mesAtualPrefix)).length;
   const cards = [
     { label: "Certificados emitidos", value: total, icon: FileText },
     { label: "Emitidos este mês", value: mesAtual, icon: Clock },
     { label: "Clientes ativos", value: new Set(certificados.map((c) => c.cliente?.razaoSocial).filter(Boolean)).size, icon: Building2 },
-    { label: "Responsáveis técnicos", value: new Set(certificados.map((c) => c.responsavel).filter(Boolean)).size || 1, icon: Users },
+    { label: "Responsáveis técnicos", value: new Set(certificados.map((c) => c.responsavel).filter(Boolean)).size, icon: Users },
   ];
   return (
     <div>
@@ -1107,28 +1162,41 @@ function Dashboard({ certificados, setPage }) {
           </div>
         ))}
       </div>
-      <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--paper-line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Certificados recentes</h3>
-          <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={() => setPage("certificados")}>Ver todos</button>
+
+      {total === 0 ? (
+        <div style={{ background: "white", border: "1px dashed var(--line)", borderRadius: 6, padding: "40px 24px", textAlign: "center" }}>
+          <FileText size={26} color="var(--graphite)" style={{ marginBottom: 12 }} />
+          <h3 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 6px" }}>Nenhum certificado emitido ainda</h3>
+          <p style={{ fontSize: 13.5, color: "var(--graphite)", marginBottom: 18 }}>Crie o primeiro certificado, ou veja um exemplo já preenchido pra entender o formato.</p>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+            <button className="btn-primary" onClick={() => setPage("novo")}><PlusCircle size={16} /> Novo certificado</button>
+            <button className="btn-ghost" onClick={onVerExemplo}>Ver certificado de exemplo</button>
+          </div>
         </div>
-        <div className="table-scroll">
-        <table className="data-table">
-          <thead><tr><th>Nº</th><th>Tipo</th><th>Assunto</th><th>Data</th><th>Status</th></tr></thead>
-          <tbody>
-            {certificados.slice(0, 5).map((c) => (
-              <tr key={c.id}>
-                <td className="mono">{c.numero}</td>
-                <td><TypeTag tipo={c.tipo} /></td>
-                <td>{c.tipo === "mrc" ? c.mrcNome : `${c.cliente?.razaoSocial || ""} — ${c.instrumento?.nome || ""}`}</td>
-                <td className="mono">{dataDe(c)}</td>
-                <td><StatusPill status={c.status} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      ) : (
+        <div style={{ background: "white", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--paper-line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Certificados recentes</h3>
+            <button className="btn-ghost" style={{ padding: "7px 14px", fontSize: 13 }} onClick={() => setPage("certificados")}>Ver todos</button>
+          </div>
+          <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>Nº</th><th>Tipo</th><th>Assunto</th><th>Data</th><th>Status</th></tr></thead>
+            <tbody>
+              {certificados.slice(0, 5).map((c) => (
+                <tr key={c.id}>
+                  <td className="mono">{c.numero}</td>
+                  <td><TypeTag tipo={c.tipo} /></td>
+                  <td>{c.tipo === "mrc" ? c.mrcNome : `${c.cliente?.razaoSocial || ""} — ${c.instrumento?.nome || ""}`}</td>
+                  <td className="mono">{dataDe(c)}</td>
+                  <td><StatusPill status={c.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1142,7 +1210,7 @@ function TypeTag({ tipo }) {
   );
 }
 
-function CertificateList({ certificados, setPage, setActiveId }) {
+function CertificateList({ certificados, setPage, setActiveId, onVerExemplo }) {
   const [q, setQ] = useState("");
   const searchText = (c) => (c.tipo === "mrc"
     ? `${c.mrcNome || ""} ${c.numero || ""} ${c.codigo || ""}`
@@ -1168,7 +1236,11 @@ function CertificateList({ certificados, setPage, setActiveId }) {
           <thead><tr><th>Nº certificado</th><th>Tipo</th><th>Assunto</th><th>Data</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: "center", padding: 30, color: "var(--graphite)" }}>Nenhum certificado encontrado.</td></tr>
+              <tr><td colSpan={6} style={{ textAlign: "center", padding: 30, color: "var(--graphite)" }}>
+                {certificados.length === 0 ? (
+                  <>Nenhum certificado ainda. <button className="btn-ghost" style={{ padding: "5px 12px", fontSize: 12.5, marginLeft: 8 }} onClick={onVerExemplo}>Ver exemplo</button></>
+                ) : "Nenhum certificado encontrado."}
+              </td></tr>
             )}
             {filtered.map((c) => (
               <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => { setActiveId(c.id); setPage("ver"); }}>
@@ -2408,7 +2480,7 @@ function Placeholder({ title }) {
   );
 }
 
-function AppShell({ onExit }) {
+function AppShell({ user, onLogout }) {
   const [page, setPage] = useState("dashboard");
   const [certificados, setCertificados] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -2417,32 +2489,30 @@ function AppShell({ onExit }) {
   const [config, setConfig] = useState(defaultConfig());
 
   useEffect(() => {
-    loadCertificados().then((list) => { setCertificados(list); setLoaded(true); });
-    loadConfig().then(setConfig);
-  }, []);
+    loadCertificados(user.id).then((list) => { setCertificados(list); setLoaded(true); });
+    loadConfig(user.id).then(setConfig);
+  }, [user.id]);
 
-  const handleSave = useCallback((novo) => {
-    setCertificados((prev) => {
-      const updated = [novo, ...prev];
-      saveCertificados(updated);
-      return updated;
-    });
-    setActiveId(novo.id);
+  const handleSave = useCallback(async (novo) => {
+    const salvo = await salvarCertificado(novo, user.id);
+    setCertificados((prev) => [salvo, ...prev]);
+    setActiveId(salvo.id);
     setPage("ver");
-  }, []);
+  }, [user.id]);
 
   const handleSaveConfig = useCallback((cfg) => {
     setConfig(cfg);
-    saveConfig(cfg);
-  }, []);
+    saveConfig(cfg, user.id);
+  }, [user.id]);
 
-  const activeCert = certificados.find((c) => c.id === activeId);
+  const activeCert = activeId === "exemplo" ? exemploCertificado() : certificados.find((c) => c.id === activeId);
   const goPage = (p) => { setPage(p); setSidebarOpen(false); };
+  const verExemplo = () => { setActiveId("exemplo"); setPage("ver"); };
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
       {sidebarOpen && <div className="app-sidebar-scrim" onClick={() => setSidebarOpen(false)} />}
-      <Sidebar page={page} setPage={goPage} onExit={onExit} open={sidebarOpen} />
+      <Sidebar page={page} setPage={goPage} onExit={onLogout} open={sidebarOpen} empresaNome={config.empresaNome} userEmail={user.email} />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <div className="app-topbar-mobile">
           <button onClick={() => setSidebarOpen(true)} style={{ background: "none", border: "none" }} aria-label="Abrir menu">
@@ -2455,9 +2525,9 @@ function AppShell({ onExit }) {
           {!loaded ? (
             <div style={{ color: "var(--graphite)", fontSize: 14 }}>Carregando...</div>
           ) : page === "dashboard" ? (
-            <Dashboard certificados={certificados} setPage={setPage} />
+            <Dashboard certificados={certificados} setPage={setPage} onVerExemplo={verExemplo} />
           ) : page === "certificados" ? (
-            <CertificateList certificados={certificados} setPage={setPage} setActiveId={setActiveId} />
+            <CertificateList certificados={certificados} setPage={setPage} setActiveId={setActiveId} onVerExemplo={verExemplo} />
           ) : page === "novo" ? (
             <NewCertificate certificados={certificados} onSave={handleSave} setPage={setPage} config={config} />
           ) : page === "ver" ? (
@@ -2483,6 +2553,8 @@ function AppShell({ onExit }) {
 
 export default function TracoApp() {
   const [view, setView] = useState("landing");
+  const [authMode, setAuthMode] = useState("login");
+  const [session, setSession] = useState(undefined);
   const [verifyPayload, setVerifyPayload] = useState(undefined);
 
   useEffect(() => {
@@ -2494,7 +2566,16 @@ export default function TracoApp() {
     }
   }, []);
 
-  if (verifyPayload === undefined) return null;
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      if (newSession) setView("app");
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  if (verifyPayload === undefined || session === undefined) return null;
 
   if (verifyPayload) {
     return (
@@ -2505,13 +2586,20 @@ export default function TracoApp() {
     );
   }
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setView("landing");
+  };
+
   return (
     <div className="traco-root">
       <GlobalStyle />
-      {view === "landing" ? (
-        <LandingPage onEnterApp={() => setView("app")} />
+      {session ? (
+        <AppShell user={session.user} onLogout={handleLogout} />
+      ) : view === "auth" ? (
+        <AuthPage mode={authMode} onAuthenticated={() => setView("app")} onBack={() => setView("landing")} />
       ) : (
-        <AppShell onExit={() => setView("landing")} />
+        <LandingPage onEnterApp={(mode) => { setAuthMode(mode || "login"); setView("auth"); }} />
       )}
     </div>
   );
