@@ -449,6 +449,15 @@ function airDensity(pressaoHpa, tempC, umidadePct) {
   if (isNaN(P) || isNaN(T) || isNaN(H)) return NaN;
   return ((0.348444 * P) - (H * (0.00252 * T - 0.020582))) / (273.15 + T);
 }
+// Coeficientes de sensibilidade da densidade do ar em relação a P, H e T
+// (derivadas parciais da fórmula do CIPM) — células L32, L35, L38 da planilha.
+function airDensitySensitivities(pressaoHpa, tempC, umidadePct) {
+  const P = parseNum(pressaoHpa), T = parseNum(tempC), H = parseNum(umidadePct);
+  const dP = 0.34844 / (273.15 + T);
+  const dH = -((0.00252 * T) - 0.020582) / (273.15 + T);
+  const dT = ((-0.34844 * P) - (0.00252 * 273.15 * H) - (H * 0.020582)) / ((273.15 + T) ** 2);
+  return { dP, dH, dT };
+}
 
 function emptyPontoMassa() {
   return {
@@ -464,24 +473,39 @@ function emptyPontoMassa() {
 function emptyGrandezaMassa() {
   return {
     resolucaoBalanca: "",
-    excentricidade: "",
-    temperaturaAr: "20",
-    umidadeAr: "50",
-    pressaoAr: "1013",
+    // Teste de excentricidade — 5 pontos (A, B, C, D ao redor + E no centro,
+    // usado como referência). A maior excentricidade é calculada automaticamente.
+    excA: "", excB: "", excC: "", excD: "", excE: "",
+    // Temperatura, umidade e pressão — leitura inicial e final (a planilha usa
+    // a média das duas, e corrige pelo certificado do instrumento usado).
+    temperaturaInicial: "", temperaturaFinal: "",
+    umidadeInicial: "", umidadeFinal: "",
+    pressaoInicial: "", pressaoFinal: "",
+    // Instrumentos auxiliares (termômetro/higrômetro/barômetro) usados pra medir
+    // as condições ambientais — cada um com sua própria resolução e incerteza
+    // combinada (vinda do certificado de calibração desses instrumentos).
+    resolucaoTermometro: "0,1", incertezaTermometro: "0,2",
+    resolucaoHigrometro: "1", incertezaHigrometro: "1,5",
+    resolucaoBarometro: "0,1", incertezaBarometro: "0,3",
     densidadePadrao: "8000",
     densidadeAjuste: "8000",
-    incertezaDensidadeAr: "0,01",
     pontos: [emptyPontoMassa()],
   };
 }
 
-// Núcleo do cálculo — reproduz a aba "CALCULO" da planilha PP-004 para um
-// ponto de calibração de balança: valor indicado (repetitividade + legibilidade
-// + excentricidade), valor convencional do padrão (massa nominal + correção do
-// certificado + correção por empuxo + deriva), combinação por quadratura,
-// graus de liberdade efetivos (Welch-Satterthwaite) e incerteza expandida
-// (fator k de Student a 95,45%).
-function computeMassaPonto(ponto, compartilhado) {
+// Núcleo do cálculo — reproduz a aba "CALCULO" da planilha PP-004 (Rev. 04,
+// validação) para um ponto de calibração de balança:
+//  • Valor Indicado (I) = repetitividade (Tipo A) + legibilidade do zero +
+//    legibilidade da indicação + excentricidade (Tipo B retangular).
+//  • Massa padrão (mref) = massa nominal + correção do certificado do padrão
+//    (Tipo B normal) + correção por empuxo do ar (mb) + deriva do padrão.
+//  • A incerteza do empuxo (mb) deriva da incerteza da própria densidade do
+//    ar, que por sua vez vem da cadeia completa de temperatura, umidade e
+//    pressão (cada uma com resolução + incerteza do instrumento auxiliar).
+//  • Combinação por quadratura, graus de liberdade efetivos (Welch-
+//    Satterthwaite), incerteza expandida (k de Student a 95,45%), e
+//    verificação de aprovação/reprovação contra a tolerância ±20×e.
+function computeMassaPonto(ponto, compartilhado, instrumento) {
   const g = compartilhado || {};
   const leituras = ponto.leiturasIndicacao || [];
 
@@ -490,21 +514,45 @@ function computeMassaPonto(ponto, compartilhado) {
   const stdevIndicacao = stdevOf(leituras);
   const resolucao = parseNum(g.resolucaoBalanca) || 0;
 
-  // Valor Indicado (I): repetitividade (Tipo A) + legibilidade do zero + legibilidade
-  // da indicação (Tipo B retangular, cada uma = resolução/2 dividido por √3) + excentricidade.
+  // Maior excentricidade — maior diferença entre os 4 pontos ao redor (A, B, C, D)
+  // e o ponto central de referência (E), igual à célula K8 da planilha.
+  const excCentro = parseNum(g.excE);
+  const diffsExc = ["excA", "excB", "excC", "excD"]
+    .map((k) => parseNum(g[k]))
+    .filter((v) => !isNaN(v) && !isNaN(excCentro))
+    .map((v) => Math.abs(v - excCentro));
+  const maiorExcentricidade = diffsExc.length ? Math.max(...diffsExc) : 0;
+
+  // Valor Indicado (I)
   const u_rep = nIndicacao > 1 ? stdevIndicacao / Math.sqrt(nIndicacao) : 0;
   const v_rep = nIndicacao > 1 ? nIndicacao - 1 : 0;
   const u_id0 = typeBRect(resolucao);
   const u_idi = typeBRect(resolucao);
-  const u_iexc = typeBRect(g.excentricidade);
+  const u_iexc = typeBRect(maiorExcentricidade);
   const u_I = Math.sqrt(u_rep ** 2 + u_id0 ** 2 + u_idi ** 2 + u_iexc ** 2);
 
-  // Massa padrão (mref): massa nominal + correção do certificado do padrão (Tipo B
-  // normal, U/k) + correção por empuxo do ar (mb) + deriva do padrão (Tipo B retangular).
+  // Condições ambientais corrigidas — média das leituras inicial/final, mais a
+  // correção do certificado de cada instrumento auxiliar (termômetro/
+  // higrômetro/barômetro), igual às células F38, F35, F32 da planilha.
+  const mediaT = meanOf([g.temperaturaInicial, g.temperaturaFinal]);
+  const mediaH = meanOf([g.umidadeInicial, g.umidadeFinal]);
+  const mediaP = meanOf([g.pressaoInicial, g.pressaoFinal]);
+  const Tcorrigida = (isNaN(mediaT) ? 0 : mediaT);
+  const Hcorrigida = (isNaN(mediaH) ? 0 : mediaH);
+  const Pcorrigida = (isNaN(mediaP) ? 0 : mediaP);
+
+  const rhoAr = airDensity(Pcorrigida, Tcorrigida, Hcorrigida);
+  const sens = airDensitySensitivities(Pcorrigida, Tcorrigida, Hcorrigida);
+
+  const u_P = Math.sqrt(typeBRect(g.resolucaoBarometro) ** 2 + (parseNum(g.incertezaBarometro) || 0) ** 2);
+  const u_H = Math.sqrt(typeBRect(g.resolucaoHigrometro) ** 2 + (parseNum(g.incertezaHigrometro) || 0) ** 2);
+  const u_T = Math.sqrt(typeBRect(g.resolucaoTermometro) ** 2 + (parseNum(g.incertezaTermometro) || 0) ** 2);
+  const uFormulaCIPM = 0.000141; // incerteza da própria fórmula simplificada do CIPM (constante)
+  const u_rhoAr = Math.sqrt((u_P * sens.dP) ** 2 + (u_H * sens.dH) ** 2 + (u_T * sens.dT) ** 2 + uFormulaCIPM ** 2);
+
+  // Massa padrão (mref)
   const nominal = parseNum(ponto.nominalPadrao) || 0;
   const correcaoCert = parseNum(ponto.correcaoPadrao) || 0;
-
-  const rhoAr = airDensity(g.pressaoAr, g.temperaturaAr, g.umidadeAr);
   const rho0 = 1.2; // densidade do ar de referência (kg/m3)
   const rhoPadrao = parseNum(g.densidadePadrao) || 8000;
   const rhoAjuste = parseNum(g.densidadeAjuste) || 8000;
@@ -512,7 +560,6 @@ function computeMassaPonto(ponto, compartilhado) {
 
   const u_cert = typeBNormal(ponto.incertezaPadrao, ponto.kPadrao);
   const u_deriva = typeBRect(ponto.derivaPadrao);
-  const u_rhoAr = parseNum(g.incertezaDensidadeAr) || 0;
   const u_mb = Math.abs(nominal) * Math.abs(1 / rhoPadrao - 1 / rhoAjuste) * u_rhoAr;
   const u_mref = Math.sqrt(u_cert ** 2 + u_mb ** 2 + u_deriva ** 2);
 
@@ -530,9 +577,22 @@ function computeMassaPonto(ponto, compartilhado) {
   const valorConvencionado = nominal + correcaoCert + mb + (parseNum(ponto.derivaPadrao) || 0);
   const correcao = valorConvencionado - (isNaN(mediaIndicacao) ? 0 : mediaIndicacao);
 
+  // Verificação de aprovação — compara o resultado (nominal + incerteza expandida)
+  // contra a tolerância ± 20×e (divisão de verificação), igual às células
+  // K97:P97 da planilha ("6.2 Pesagem").
+  const e = parseNum(instrumento?.e) || 0;
+  const limiteTolerancia = 20 * e;
+  const resultadoVerificacao = nominal + uexp;
+  const limiteSuperior = nominal + limiteTolerancia;
+  const limiteInferior = nominal - limiteTolerancia;
+  const status = limiteTolerancia > 0
+    ? (resultadoVerificacao > limiteSuperior || resultadoVerificacao < limiteInferior ? "Reprovado" : "Aprovado")
+    : null;
+
   return {
     mediaIndicacao, nIndicacao, valorConvencionado, correcao,
-    u_I, u_mref, uc, veff, k, uexp, rhoAr, mb,
+    u_I, u_mref, uc, veff, k, uexp, rhoAr, mb, maiorExcentricidade,
+    limiteSuperior, limiteInferior, status,
   };
 }
 
@@ -697,13 +757,15 @@ function exemploCertificado() {
     resultados: {
       massa: {
         resolucaoBalanca: "0,01",
-        excentricidade: "0,02",
-        temperaturaAr: "23",
-        umidadeAr: "55",
-        pressaoAr: "1013",
+        excA: "0,01", excB: "-0,01", excC: "0,02", excD: "0,00", excE: "0,00",
+        temperaturaInicial: "22,8", temperaturaFinal: "23,2",
+        umidadeInicial: "54", umidadeFinal: "56",
+        pressaoInicial: "1013", pressaoFinal: "1013",
+        resolucaoTermometro: "0,1", incertezaTermometro: "0,2",
+        resolucaoHigrometro: "1", incertezaHigrometro: "1,5",
+        resolucaoBarometro: "0,1", incertezaBarometro: "0,3",
         densidadePadrao: "8000",
         densidadeAjuste: "8000",
-        incertezaDensidadeAr: "0,01",
         pontos: [
           { leiturasIndicacao: ["100,01", "100,00", "100,01", "100,00", "100,01"], nominalPadrao: "100", correcaoPadrao: "0,002", incertezaPadrao: "0,005", kPadrao: "2", derivaPadrao: "0,001" },
           { leiturasIndicacao: ["1000,02", "1000,01", "1000,02", "1000,01", "1000,02"], nominalPadrao: "1000", correcaoPadrao: "0,010", incertezaPadrao: "0,020", kPadrao: "2", derivaPadrao: "0,005" },
@@ -1312,15 +1374,16 @@ function fmtNum(n, casas = 3) {
 
 // Um ponto de calibração de balança: 5 leituras da indicação, massa nominal
 // do padrão usado nesse ponto, e os dados do certificado do padrão. O
-// resultado do cálculo de incerteza (GUM/PP-004) aparece ao vivo.
-function PontoMassaCard({ ponto, index, compartilhado, onChange, onRemove, canRemove }) {
+// resultado do cálculo de incerteza (GUM/PP-004) aparece ao vivo, junto com
+// a verificação de aprovação/reprovação (± 20×e).
+function PontoMassaCard({ ponto, index, compartilhado, instrumento, onChange, onRemove, canRemove }) {
   const set = (field, v) => onChange({ ...ponto, [field]: v });
   const setLeitura = (i, v) => {
     const arr = [...ponto.leiturasIndicacao];
     arr[i] = v;
     onChange({ ...ponto, leiturasIndicacao: arr });
   };
-  const r = computeMassaPonto(ponto, compartilhado);
+  const r = computeMassaPonto(ponto, compartilhado, instrumento);
 
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 16, marginBottom: 14, background: "var(--paper)" }}>
@@ -1353,15 +1416,19 @@ function PontoMassaCard({ ponto, index, compartilhado, onChange, onRemove, canRe
         <span><b>ν<span style={{ fontSize: 9 }}>eff</span></b> <span className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</span></span>
         <span><b>k</b> <span className="mono">{fmtNum(r.k, 2)}</span></span>
         <span style={{ color: "var(--steel)", fontWeight: 700 }}><b>U<span style={{ fontSize: 9 }}>exp</span></b> <span className="mono">{fmtNum(r.uexp, 3)}</span></span>
+        {r.status && (
+          <span style={{ fontWeight: 700, color: r.status === "Aprovado" ? "var(--seal-green)" : "var(--alert)" }}>{r.status}</span>
+        )}
       </div>
     </div>
   );
 }
 
-// Bloco completo da calibração de massa: condições ambientais e dados
-// compartilhados (resolução da balança, excentricidade, densidades) + lista
-// de pontos de calibração, com o cálculo de incerteza (GUM/PP-004) ao vivo.
-function MassaCalibracao({ grandeza, onChange }) {
+// Bloco completo da calibração de massa: teste de excentricidade (5 pontos),
+// condições ambientais inicial/final (com instrumentos auxiliares), densidades
+// do padrão/ajuste, e a lista de pontos de calibração — tudo com o cálculo de
+// incerteza (GUM/PP-004, Rev. 04 — validação) ao vivo.
+function MassaCalibracao({ grandeza, instrumento, onChange }) {
   const set = (field, v) => onChange({ ...grandeza, [field]: v });
   const setPonto = (i, novoPonto) => {
     const pontos = grandeza.pontos.map((p, idx) => (idx === i ? novoPonto : p));
@@ -1370,24 +1437,60 @@ function MassaCalibracao({ grandeza, onChange }) {
   const addPonto = () => onChange({ ...grandeza, pontos: [...grandeza.pontos, emptyPontoMassa()] });
   const removePonto = (i) => onChange({ ...grandeza, pontos: grandeza.pontos.filter((_, idx) => idx !== i) });
 
+  const excCentro = parseNum(grandeza.excE);
+  const diffsExc = ["excA", "excB", "excC", "excD"]
+    .map((k) => parseNum(grandeza[k]))
+    .filter((v) => !isNaN(v) && !isNaN(excCentro))
+    .map((v) => Math.abs(v - excCentro));
+  const maiorExcentricidade = diffsExc.length ? Math.max(...diffsExc) : null;
+
   return (
     <div style={{ marginBottom: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12, fontWeight: 600, fontSize: 13.5 }}>
-        <Scale size={15} color="var(--steel)" /> Condições da calibração
+        <Scale size={15} color="var(--steel)" /> Teste de excentricidade
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--graphite)", marginBottom: 10 }}>Leituras com a mesma carga posicionada no centro (E) e nos 4 cantos do prato (A, B, C, D), depois do ajuste da balança.</p>
+      <div style={{ display: "flex", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <MiniField label="A" value={grandeza.excA} onChange={(e) => set("excA", e.target.value)} placeholder="0,00" />
+        <MiniField label="B" value={grandeza.excB} onChange={(e) => set("excB", e.target.value)} placeholder="0,00" />
+        <MiniField label="C" value={grandeza.excC} onChange={(e) => set("excC", e.target.value)} placeholder="0,00" />
+        <MiniField label="D" value={grandeza.excD} onChange={(e) => set("excD", e.target.value)} placeholder="0,00" />
+        <MiniField label="E (centro)" value={grandeza.excE} onChange={(e) => set("excE", e.target.value)} placeholder="0,00" />
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--graphite)", marginBottom: 20 }}>
+        Maior excentricidade calculada: <b className="mono">{maiorExcentricidade === null ? "—" : fmtNum(maiorExcentricidade, 4)}</b> {instrumento?.unidade}
+      </p>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12, fontWeight: 600, fontSize: 13.5 }}>
+        <Scale size={15} color="var(--steel)" /> Condições ambientais e instrumentos auxiliares
       </div>
       <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
         <div><label className="field-label">Resolução da balança (d)</label><input value={grandeza.resolucaoBalanca} onChange={(e) => set("resolucaoBalanca", e.target.value)} placeholder="0,01" /></div>
-        <div><label className="field-label">Maior excentricidade medida</label><input value={grandeza.excentricidade} onChange={(e) => set("excentricidade", e.target.value)} placeholder="0,02" /></div>
+        <div></div>
       </div>
-      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <div><label className="field-label">Temperatura do ar (°C)</label><input value={grandeza.temperaturaAr} onChange={(e) => set("temperaturaAr", e.target.value)} placeholder="20" /></div>
-        <div><label className="field-label">Umidade do ar (%UR)</label><input value={grandeza.umidadeAr} onChange={(e) => set("umidadeAr", e.target.value)} placeholder="50" /></div>
-        <div><label className="field-label">Pressão atmosférica (hPa)</label><input value={grandeza.pressaoAr} onChange={(e) => set("pressaoAr", e.target.value)} placeholder="1013" /></div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <MiniField label="Temp. inicial (°C)" value={grandeza.temperaturaInicial} onChange={(e) => set("temperaturaInicial", e.target.value)} placeholder="20,0" />
+        <MiniField label="Temp. final (°C)" value={grandeza.temperaturaFinal} onChange={(e) => set("temperaturaFinal", e.target.value)} placeholder="20,5" />
+        <MiniField label="Resolução termômetro" value={grandeza.resolucaoTermometro} onChange={(e) => set("resolucaoTermometro", e.target.value)} placeholder="0,1" />
+        <MiniField label="U termômetro" value={grandeza.incertezaTermometro} onChange={(e) => set("incertezaTermometro", e.target.value)} placeholder="0,2" />
       </div>
-      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <MiniField label="Umid. inicial (%UR)" value={grandeza.umidadeInicial} onChange={(e) => set("umidadeInicial", e.target.value)} placeholder="50" />
+        <MiniField label="Umid. final (%UR)" value={grandeza.umidadeFinal} onChange={(e) => set("umidadeFinal", e.target.value)} placeholder="52" />
+        <MiniField label="Resolução higrômetro" value={grandeza.resolucaoHigrometro} onChange={(e) => set("resolucaoHigrometro", e.target.value)} placeholder="1" />
+        <MiniField label="U higrômetro" value={grandeza.incertezaHigrometro} onChange={(e) => set("incertezaHigrometro", e.target.value)} placeholder="1,5" />
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <MiniField label="Pressão inicial (hPa)" value={grandeza.pressaoInicial} onChange={(e) => set("pressaoInicial", e.target.value)} placeholder="1013" />
+        <MiniField label="Pressão final (hPa)" value={grandeza.pressaoFinal} onChange={(e) => set("pressaoFinal", e.target.value)} placeholder="1013" />
+        <MiniField label="Resolução barômetro" value={grandeza.resolucaoBarometro} onChange={(e) => set("resolucaoBarometro", e.target.value)} placeholder="0,1" />
+        <MiniField label="U barômetro" value={grandeza.incertezaBarometro} onChange={(e) => set("incertezaBarometro", e.target.value)} placeholder="0,3" />
+      </div>
+
+      <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
         <div><label className="field-label">Densidade do padrão (kg/m³)</label><input value={grandeza.densidadePadrao} onChange={(e) => set("densidadePadrao", e.target.value)} placeholder="8000" /></div>
         <div><label className="field-label">Densidade peso de ajuste (kg/m³)</label><input value={grandeza.densidadeAjuste} onChange={(e) => set("densidadeAjuste", e.target.value)} placeholder="8000" /></div>
-        <div><label className="field-label">Incerteza densidade do ar</label><input value={grandeza.incertezaDensidadeAr} onChange={(e) => set("incertezaDensidadeAr", e.target.value)} placeholder="0,01" /></div>
       </div>
 
       <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 12 }}>Pontos de calibração</div>
@@ -1397,6 +1500,7 @@ function MassaCalibracao({ grandeza, onChange }) {
           ponto={ponto}
           index={i}
           compartilhado={grandeza}
+          instrumento={instrumento}
           onChange={(novoPonto) => setPonto(i, novoPonto)}
           onRemove={() => removePonto(i)}
           canRemove={grandeza.pontos.length > 1}
@@ -1578,7 +1682,7 @@ function NewCertificate({ certificados, onSave, setPage, config }) {
           </Section>
 
           <Section title="Resultados — Calibração de Massa (PP-004 / RBC)">
-            <MassaCalibracao grandeza={form.resultados.massa} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, massa: g } }))} />
+            <MassaCalibracao grandeza={form.resultados.massa} instrumento={form.instrumento} onChange={(g) => setForm((f) => ({ ...f, resultados: { ...f.resultados, massa: g } }))} />
           </Section>
 
           <Section title="Emissão">
@@ -2138,7 +2242,7 @@ function CertificateView({ cert, setPage, config }) {
         </div>
 
         <div className="cert-section-title"><span>Folha de Resultado</span><span className="en">Results Sheet</span></div>
-        <p className="cert-note">V.C. — valor convencional do padrão (massa nominal + correção do certificado + correção por empuxo do ar + deriva). V.M.I. — valor médio indicado pela balança. Correção = V.C. − V.M.I. Incerteza calculada segundo o GUM (ISO/IEC Guia 98-3) e o procedimento PP-004/RBC de calibração de balanças, com graus de liberdade efetivos por Welch-Satterthwaite e fator k de Student a 95,45% de confiança.</p>
+        <p className="cert-note">V.C. — valor convencional do padrão (massa nominal + correção do certificado + correção por empuxo do ar + deriva). V.M.I. — valor médio indicado pela balança. Correção = V.C. − V.M.I. Incerteza calculada segundo o GUM (ISO/IEC Guia 98-3) e o procedimento PP-004 de calibração de balanças (Rev. 04 — validação), com graus de liberdade efetivos por Welch-Satterthwaite e fator k de Student a 95,45% de confiança. Status conforme tolerância de ± 20 vezes a divisão de verificação (e) do instrumento.</p>
 
         {cert.resultados?.massa?.pontos?.length > 0 && (
           <div style={{ margin: "18px 0" }}>
@@ -2147,9 +2251,9 @@ function CertificateView({ cert, setPage, config }) {
             </div>
             <div className="table-scroll">
             <table className="data-table">
-              <thead><tr><th>Nominal</th><th>V.C.</th><th>V.M.I.</th><th>Correção</th><th>Incerteza Expandida</th><th>k</th><th>ν<span style={{ fontSize: 8 }}>eff</span></th></tr></thead>
+              <thead><tr><th>Nominal</th><th>V.C.</th><th>V.M.I.</th><th>Correção</th><th>Incerteza Expandida</th><th>k</th><th>ν<span style={{ fontSize: 8 }}>eff</span></th><th>Status</th></tr></thead>
               <tbody>{cert.resultados.massa.pontos.map((ponto, i) => {
-                const r = computeMassaPonto(ponto, cert.resultados.massa);
+                const r = computeMassaPonto(ponto, cert.resultados.massa, cert.instrumento);
                 return (
                   <tr key={i}>
                     <td className="mono">{ponto.nominalPadrao || "—"}</td>
@@ -2159,14 +2263,17 @@ function CertificateView({ cert, setPage, config }) {
                     <td className="mono">{fmtNum(r.uexp, 3)}</td>
                     <td className="mono">{r.k.toFixed(2).replace(".", ",")}</td>
                     <td className="mono">{r.k >= 2 && r.veff >= 100 ? "∞" : fmtNum(r.veff, 1)}</td>
+                    <td style={{ fontWeight: 700, color: r.status === "Aprovado" ? "var(--seal-green)" : r.status === "Reprovado" ? "var(--alert)" : "var(--graphite)" }}>{r.status || "—"}</td>
                   </tr>
                 );
               })}</tbody>
             </table>
             </div>
             <p className="cert-note" style={{ marginTop: 8 }}>
-              Condições ambientais: {cert.resultados.massa.temperaturaAr}°C · {cert.resultados.massa.umidadeAr}%UR · {cert.resultados.massa.pressaoAr} hPa.
-              Maior excentricidade: {cert.resultados.massa.excentricidade} {cert.instrumento?.unidade}.
+              Condições ambientais (média inicial/final): {fmtNum(meanOf([cert.resultados.massa.temperaturaInicial, cert.resultados.massa.temperaturaFinal]), 1)}°C ·{" "}
+              {fmtNum(meanOf([cert.resultados.massa.umidadeInicial, cert.resultados.massa.umidadeFinal]), 1)}%UR ·{" "}
+              {fmtNum(meanOf([cert.resultados.massa.pressaoInicial, cert.resultados.massa.pressaoFinal]), 1)} hPa.
+              {" "}Teste de excentricidade — A: {cert.resultados.massa.excA || "—"} · B: {cert.resultados.massa.excB || "—"} · C: {cert.resultados.massa.excC || "—"} · D: {cert.resultados.massa.excD || "—"} · E (centro): {cert.resultados.massa.excE || "—"} {cert.instrumento?.unidade}.
             </p>
           </div>
         )}
